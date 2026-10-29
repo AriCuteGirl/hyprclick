@@ -2,6 +2,7 @@
 //! you for being idle. Two ways:
 //! - Window: the hyprclick plugin wiggles the target's own pointer (or taps
 //!   right-click) in the background, like a click, only for that window.
+//!   Hyprland only.
 //! - Gamepad: the roblox-caffeine way, a virtual Xbox pad nudges both sticks.
 //!   Games read pads even when unfocused, but every game sees it. Roblox
 //!   only reacts while you're inside a game. The pad lives in a small
@@ -11,6 +12,7 @@
 //! away (closed or crashed).
 
 use crate::config::{AfkAction, AfkMethod, Config};
+use crate::desktop;
 use crate::hypr;
 use chrono::{DateTime, Local};
 use evdev::uinput::VirtualDevice;
@@ -114,10 +116,11 @@ impl AntiAfk {
     pub fn start(&mut self, cfg: &Config) -> Result<(), String> {
         self.stop();
         let interval = Duration::from_secs_f64(cfg.afk_minutes.max(0.1) * 60.0);
-        let target = hypr::find_target(&cfg.target_class, &cfg.target_title)
+        let target = desktop::find_target(&cfg.target_class, &cfg.target_title)
             .ok_or_else(|| format!("window '{}' isn't open", cfg.target_class))?;
         let mut driver = match cfg.afk_method {
             AfkMethod::Window => {
+                desktop::get().window_mode().map_err(|_| "Window anti-AFK needs Hyprland, use Gamepad".to_string())?;
                 hypr::plugin::ensure()?;
                 Driver::Window { address: target.address.clone(), action: cfg.afk_action }
             }
@@ -175,14 +178,14 @@ impl AntiAfk {
                     std::thread::sleep(Duration::from_millis(200));
                     if checked.elapsed() >= WATCH_EVERY {
                         checked = Instant::now();
-                        if !hypr::clients().iter().any(|c| c.address == address) {
+                        if !desktop::clients().iter().any(|c| c.address == address) {
                             stop2.store(true, Ordering::Relaxed);
                             let mut s = status.lock().unwrap();
                             s.running = false;
                             s.next_at = None;
                             s.error = Some("target window closed, anti-AFK stopped".into());
                             drop(s);
-                            hypr::notify("hyprclick: target window closed, anti-AFK stopped");
+                            desktop::notify("hyprclick: target window closed, anti-AFK stopped");
                             if let Some(cb) = &cb {
                                 cb();
                             }

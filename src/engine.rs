@@ -1,6 +1,7 @@
 //! The three click engines behind one start/stop interface.
 
 use crate::config::{Config, Mode};
+use crate::desktop::{self, Desktop};
 use crate::hypr;
 use evdev::uinput::VirtualDevice;
 use evdev::{AttributeSet, EventType, InputEvent, KeyCode, RelativeAxisCode};
@@ -12,6 +13,8 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 type Device = Arc<Mutex<VirtualDevice>>;
+
+const KDE_FOCUS_POLL: Duration = Duration::from_millis(250);
 
 enum Running {
     Plugin,
@@ -72,8 +75,9 @@ impl Engine {
     }
 
     fn start_plugin(&mut self, cfg: &Config) -> Result<String, String> {
+        desktop::get().window_mode()?;
         hypr::plugin::ensure()?;
-        let target = hypr::find_target(&cfg.target_class, &cfg.target_title)
+        let target = desktop::find_target(&cfg.target_class, &cfg.target_title)
             .ok_or_else(|| format!("window '{}' not found", cfg.target_class))?;
         let x = (cfg.pos[0] as f64 * target.size[0]).round();
         let y = (cfg.pos[1] as f64 * target.size[1]).round();
@@ -110,7 +114,7 @@ impl Engine {
         };
         let code = cfg.button.code();
         let gate = if cfg.cursor_only_in_target {
-            let target = hypr::find_target(&cfg.target_class, &cfg.target_title)
+            let target = desktop::find_target(&cfg.target_class, &cfg.target_title)
                 .ok_or_else(|| format!("window '{}' not found", cfg.target_class))?;
             Some(target.address)
         } else {
@@ -120,7 +124,7 @@ impl Engine {
         let stop = Arc::new(AtomicBool::new(false));
         let focused = Arc::new(AtomicBool::new(true));
         if let Some(addr) = gate.clone() {
-            focused.store(hypr::active_address().as_deref() == Some(addr.as_str()), Ordering::Relaxed);
+            focused.store(desktop::active_address().as_deref() == Some(addr.as_str()), Ordering::Relaxed);
             watch_focus(addr, focused.clone(), stop.clone());
         }
 
@@ -210,8 +214,18 @@ fn sleep_until(deadline: Instant) {
     }
 }
 
-/// Tracks whether `address` has keyboard focus via Hyprland's event socket.
+/// Tracks whether `address` has keyboard focus: Hyprland's event socket,
+/// or asking KWin a few times a second.
 fn watch_focus(address: String, focused: Arc<AtomicBool>, stop: Arc<AtomicBool>) {
+    if desktop::get() == Desktop::Kde {
+        std::thread::spawn(move || {
+            while !stop.load(Ordering::Relaxed) {
+                focused.store(desktop::active_address().as_deref() == Some(address.as_str()), Ordering::Relaxed);
+                std::thread::sleep(KDE_FOCUS_POLL);
+            }
+        });
+        return;
+    }
     let Some(path) = hypr::event_socket() else { return };
     std::thread::spawn(move || {
         let Ok(sock) = UnixStream::connect(path) else { return };

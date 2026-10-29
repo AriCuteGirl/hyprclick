@@ -1,6 +1,6 @@
 use crate::config::Config;
 use crate::engine::Engine;
-use crate::hypr;
+use crate::desktop;
 use std::time::Instant;
 
 /// Config + engine + what the UI shows. Shared by the GUI and the IPC thread.
@@ -32,13 +32,13 @@ impl Controller {
                 self.clicks = 0;
                 self.started = Some(Instant::now());
                 if self.cfg.notify {
-                    hypr::notify(&format!("hyprclick ON  ·  {} CPS  ·  {desc}", fmt_cps(self.cfg.cps)));
+                    desktop::notify(&format!("hyprclick ON  ·  {} CPS  ·  {desc}", fmt_cps(self.cfg.cps)));
                 }
                 self.desc = desc;
             }
             Err(e) => {
                 if self.cfg.notify {
-                    hypr::notify(&format!("hyprclick: {e}"));
+                    desktop::notify(&format!("hyprclick: {e}"));
                 }
                 self.error = Some(e);
             }
@@ -53,7 +53,7 @@ impl Controller {
         self.engine.stop();
         self.started = None;
         if self.cfg.notify {
-            hypr::notify(&format!("hyprclick OFF  ·  {} clicks", self.clicks));
+            desktop::notify(&format!("hyprclick OFF  ·  {} clicks", self.clicks));
         }
     }
 
@@ -73,7 +73,7 @@ impl Controller {
             // Fail-safe: the plugin stopped on its own (target window gone).
             self.started = None;
             if self.cfg.notify {
-                hypr::notify(&format!("hyprclick stopped: {reason}"));
+                desktop::notify(&format!("hyprclick stopped: {reason}"));
             }
             self.error = Some(reason);
         }

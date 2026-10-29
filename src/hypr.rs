@@ -6,6 +6,8 @@ use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::process::Command;
 
+pub use crate::desktop::Client;
+
 const PLUGIN_SRC: &str = include_str!("../plugin/hyprclick.cpp");
 const PLUGIN_PKGS: &str = "pixman-1 libdrm hyprland pangocairo libinput libudev wayland-server xkbcommon";
 
@@ -33,40 +35,27 @@ pub fn event_socket() -> Option<PathBuf> {
     Some(socket_dir()?.join(".socket2.sock"))
 }
 
-#[derive(Clone, Debug, PartialEq)]
-pub struct Client {
-    pub address: String,
-    pub class: String,
-    pub title: String,
-    pub at: [f64; 2],
-    pub size: [f64; 2],
-    pub xwayland: bool,
-    pub workspace_id: i64,
-    pub focus_history: i64,
-}
-
-impl Client {
-    pub fn contains(&self, x: f64, y: f64) -> bool {
-        x >= self.at[0] && y >= self.at[1] && x < self.at[0] + self.size[0] && y < self.at[1] + self.size[1]
-    }
-}
-
 pub fn clients() -> Vec<Client> {
     let Some(Value::Array(list)) = request_json("clients") else {
         return Vec::new();
     };
+    let visible = visible_workspaces();
     let pair = |v: &Value| [v[0].as_f64().unwrap_or(0.0), v[1].as_f64().unwrap_or(0.0)];
     list.iter()
         .filter(|c| c["mapped"].as_bool().unwrap_or(true))
-        .map(|c| Client {
-            address: c["address"].as_str().unwrap_or_default().into(),
-            class: c["class"].as_str().unwrap_or_default().into(),
-            title: c["title"].as_str().unwrap_or_default().into(),
-            at: pair(&c["at"]),
-            size: pair(&c["size"]),
-            xwayland: c["xwayland"].as_bool().unwrap_or(false),
-            workspace_id: c["workspace"]["id"].as_i64().unwrap_or(0),
-            focus_history: c["focusHistoryID"].as_i64().unwrap_or(i64::MAX),
+        .map(|c| {
+            let workspace = c["workspace"]["id"].as_i64().unwrap_or(0);
+            Client {
+                address: c["address"].as_str().unwrap_or_default().into(),
+                class: c["class"].as_str().unwrap_or_default().into(),
+                title: c["title"].as_str().unwrap_or_default().into(),
+                at: pair(&c["at"]),
+                size: pair(&c["size"]),
+                xwayland: Some(c["xwayland"].as_bool().unwrap_or(false)),
+                workspace: format!("ws {workspace}"),
+                visible: visible.contains(&workspace),
+                recency: c["focusHistoryID"].as_i64().unwrap_or(i64::MAX),
+            }
         })
         .collect()
 }
@@ -89,21 +78,6 @@ fn visible_workspaces() -> Vec<i64> {
         .flatten()
         .filter(|id| *id != 0)
         .collect()
-}
-
-/// The visible window under a global point, topmost guess = most recently focused.
-pub fn window_at(x: f64, y: f64) -> Option<Client> {
-    let visible = visible_workspaces();
-    clients()
-        .into_iter()
-        .filter(|c| c.class != crate::APP_ID && visible.contains(&c.workspace_id) && c.contains(x, y))
-        .min_by_key(|c| c.focus_history)
-}
-
-pub fn find_target(class: &str, title: &str) -> Option<Client> {
-    let mut matches: Vec<Client> = clients().into_iter().filter(|c| c.class == class).collect();
-    matches.sort_by_key(|c| (title.is_empty() || c.title != title, c.focus_history));
-    matches.into_iter().next()
 }
 
 pub fn notify(text: &str) {

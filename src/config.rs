@@ -6,7 +6,8 @@ use std::time::Duration;
 pub enum Mode {
     /// Virtual mouse clicks wherever the real cursor is.
     Cursor,
-    /// Hyprland plugin clicks inside the target window without focusing it.
+    /// Hyprland plugin clicks inside the target window without focusing it
+    /// (Hyprland only).
     /// (Also what an old "Gamepad" setting loads as.)
     #[default]
     #[serde(other)]
@@ -81,14 +82,16 @@ pub struct Config {
     pub afk_method: AfkMethod,
     pub afk_action: AfkAction,
     pub afk_minutes: f64,
-    /// Toggle key, written into Hyprland's config by `hyprclick setup`.
+    /// Toggle key, written into Hyprland's config / KDE's global shortcuts by `hyprclick setup`.
     pub hotkey: crate::hotkey::Hotkey,
 }
 
 impl Default for Config {
     fn default() -> Self {
+        // Without the Hyprland plugin only the uinput ways work.
+        let window = crate::desktop::get().window_mode().is_ok();
         Self {
-            mode: Mode::Window,
+            mode: if window { Mode::Window } else { Mode::Cursor },
             target_class: "org.vinegarhq.Sober".into(),
             target_title: String::new(),
             pos: [0.5, 0.5],
@@ -100,7 +103,7 @@ impl Default for Config {
             pause_when_hidden: true,
             at_mouse: false,
             notify: true,
-            afk_method: AfkMethod::Window,
+            afk_method: if window { AfkMethod::Window } else { AfkMethod::Gamepad },
             afk_action: AfkAction::Wiggle,
             afk_minutes: 10.0,
             hotkey: crate::hotkey::Hotkey::default(),

@@ -1,6 +1,7 @@
 use crate::config::{AfkAction, AfkMethod, Config, Mode, MouseButton, MAX_CPS};
 use crate::controller::{fmt_cps, Controller};
 use crate::hotkey::Hotkey;
+use crate::desktop::{self, Client, Desktop};
 use crate::{afk, hypr, ipc, setup, theme, APP_ID};
 use eframe::egui::{
     self, pos2, vec2, Align, Align2, Color32, CornerRadius, FontData, FontDefinitions, FontFamily,
@@ -34,6 +35,8 @@ enum PluginState {
     Checking,
     Ready,
     Failed(String),
+    /// Not on Hyprland: no plugin, no Window mode.
+    Unsupported(String),
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -47,10 +50,10 @@ enum Tab {
 struct App {
     ctrl: Arc<Mutex<Controller>>,
     plugin: Arc<Mutex<PluginState>>,
-    windows: Vec<hypr::Client>,
+    windows: Vec<Client>,
     windows_at: Instant,
     pick_until: Option<Instant>,
-    pick_preview: Option<(hypr::Client, f64, f64)>,
+    pick_preview: Option<(Client, f64, f64)>,
     polled_at: Instant,
     meter: (u64, Instant, f64),
     saved: String,
@@ -93,14 +96,19 @@ impl App {
     fn new(ctrl: Arc<Mutex<Controller>>, ctx: &egui::Context) -> Self {
         // Build/load the plugin up front so the first start is instant.
         let plugin = Arc::new(Mutex::new(PluginState::Checking));
-        let (p, ctx2) = (plugin.clone(), ctx.clone());
-        std::thread::spawn(move || {
-            *p.lock().unwrap() = match hypr::plugin::ensure() {
-                Ok(()) => PluginState::Ready,
-                Err(e) => PluginState::Failed(e),
-            };
-            ctx2.request_repaint();
-        });
+        match desktop::get().window_mode() {
+            Ok(()) => {
+                let (p, ctx2) = (plugin.clone(), ctx.clone());
+                std::thread::spawn(move || {
+                    *p.lock().unwrap() = match hypr::plugin::ensure() {
+                        Ok(()) => PluginState::Ready,
+                        Err(e) => PluginState::Failed(e),
+                    };
+                    ctx2.request_repaint();
+                });
+            }
+            Err(e) => *plugin.lock().unwrap() = PluginState::Unsupported(e),
+        }
         let saved = serde_json::to_string(&ctrl.lock().unwrap().cfg).unwrap_or_default();
         let mut afk = afk::AntiAfk::new();
         let ctx3 = ctx.clone();
@@ -108,7 +116,7 @@ impl App {
         Self {
             ctrl,
             plugin,
-            windows: hypr::clients(),
+            windows: desktop::clients(),
             windows_at: Instant::now(),
             pick_until: None,
             pick_preview: None,
@@ -129,7 +137,7 @@ impl App {
     fn tick(&mut self, ctx: &egui::Context, c: &mut Controller) {
         let now = Instant::now();
         if now - self.windows_at > Duration::from_secs(2) {
-            self.windows = hypr::clients();
+            self.windows = desktop::clients();
             self.windows_at = now;
         }
         if c.running() && now - self.polled_at > Duration::from_millis(200) {
@@ -145,8 +153,8 @@ impl App {
         }
 
         if let Some(until) = self.pick_until {
-            let pos = hypr::cursor_pos();
-            self.pick_preview = pos.and_then(|(x, y)| hypr::window_at(x, y).map(|w| (w, x, y)));
+            let pos = desktop::cursor_pos();
+            self.pick_preview = pos.and_then(|(x, y)| desktop::window_at(x, y).map(|w| (w, x, y)));
             if now >= until {
                 self.pick_until = None;
                 if let Some((w, x, y)) = self.pick_preview.take() {
@@ -276,6 +284,7 @@ impl App {
                     PluginState::Checking => ("plugin …".to_string(), pal().weak),
                     PluginState::Ready => ("plugin ready".to_string(), pal().good),
                     PluginState::Failed(_) => ("plugin off".to_string(), pal().bad),
+                    PluginState::Unsupported(_) => (desktop::get().name().to_string(), pal().weak),
                 };
                 pill(ui, &txt, col);
             });
@@ -332,16 +341,26 @@ impl App {
                     (Mode::Cursor, format!("{I_CURSOR}  Cursor")),
                 ],
             );
-            let hint = match c.cfg.mode {
-                Mode::Window => "Clicks the chosen window in the background, mouse stays free.",
-                Mode::Cursor => "Clicks wherever your cursor is.",
+            let unsupported = match &*self.plugin.lock().unwrap() {
+                PluginState::Unsupported(e) => Some(e.clone()),
+                _ => None,
             };
-            ui.label(RichText::new(hint).color(pal().weak).size(11.5));
+            match (c.cfg.mode, unsupported) {
+                (Mode::Window, Some(e)) => {
+                    ui.label(RichText::new(e).color(pal().bad).size(11.5));
+                }
+                (Mode::Window, None) => {
+                    ui.label(RichText::new("Clicks the chosen window in the background, mouse stays free.").color(pal().weak).size(11.5));
+                }
+                (Mode::Cursor, _) => {
+                    ui.label(RichText::new("Clicks wherever your cursor is.").color(pal().weak).size(11.5));
+                }
+            }
         });
     }
 
     fn target_card(&mut self, ui: &mut Ui, c: &mut Controller) {
-        let target = hypr::find_target(&c.cfg.target_class, &c.cfg.target_title);
+        let target = desktop::find_target(&c.cfg.target_class, &c.cfg.target_title);
         card(ui, None, |ui| {
             ui.horizontal(|ui| {
                 let w = ui.available_width() - 44.0;
@@ -361,16 +380,20 @@ impl App {
                         }
                     });
                 if icon_button(ui, I_REFRESH).on_hover_text("Refresh window list").clicked() {
-                    self.windows = hypr::clients();
+                    self.windows = desktop::clients();
                     self.windows_at = Instant::now();
                 }
             });
 
             match &target {
                 Some(t) => {
-                    let kind = if t.xwayland { "XWayland" } else { "Wayland" };
+                    let kind = match t.xwayland {
+                        Some(true) => " · XWayland",
+                        Some(false) => " · Wayland",
+                        None => "",
+                    };
                     ui.label(
-                        RichText::new(format!("●  open · {}×{} · {kind} · ws {}", t.size[0], t.size[1], t.workspace_id))
+                        RichText::new(format!("●  open · {}×{}{kind} · {}", t.size[0], t.size[1], t.workspace))
                             .color(pal().good)
                             .size(11.5),
                     );
@@ -537,7 +560,9 @@ impl App {
                 let actions = [(AfkAction::Wiggle, "Wiggle mouse".to_string()), (AfkAction::RightClick, "Right-click".to_string())];
                 segmented(ui, "afk_action", &mut c.cfg.afk_action, &actions);
             }
+            let window_ok = desktop::get().window_mode().is_ok();
             let hint = match c.cfg.afk_method {
+                AfkMethod::Window if !window_ok => "Window anti-AFK needs Hyprland. Use Gamepad here.",
                 AfkMethod::Window => "Pokes only the target window, in the background.",
                 AfkMethod::Gamepad => "roblox-caffeine style pad. Roblox reacts in-game only.",
             };
@@ -617,15 +642,15 @@ impl App {
             if let Some((ok, msg)) = &self.key_msg {
                 ui.label(RichText::new(msg).color(if *ok { pal().good } else { pal().bad }).size(11.0));
             }
-            ui.label(
-                RichText::new("Side mouse buttons work too. SUPER combos and keys Hyprland already uses can't be recorded, type those.")
-                    .color(pal().weak)
-                    .size(11.0),
-            );
+            let hint = match desktop::get() {
+                Desktop::Hyprland => "Side mouse buttons work too. SUPER combos and keys Hyprland already uses can't be recorded, type those.",
+                Desktop::Kde => "Becomes a KDE global shortcut (System Settings → Shortcuts). KDE can't bind mouse buttons. SUPER (Meta) combos can't be recorded, type those.",
+            };
+            ui.label(RichText::new(hint).color(pal().weak).size(11.0));
         });
     }
 
-    /// Writes the hotkey into Hyprland's config (same as `hyprclick setup`).
+    /// Binds the hotkey in the compositor (same as `hyprclick setup`).
     fn apply_hotkey(&mut self, c: &mut Controller) {
         c.cfg.save();
         self.key_msg = Some(match setup::apply(&c.cfg.hotkey) {

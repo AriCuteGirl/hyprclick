@@ -1,10 +1,12 @@
 mod afk;
 mod config;
 mod controller;
+mod desktop;
 mod engine;
 mod hotkey;
 mod hypr;
 mod ipc;
+mod kde;
 mod setup;
 mod theme;
 mod ui;
@@ -17,15 +19,16 @@ use std::time::Duration;
 
 pub const APP_ID: &str = "hyprclick";
 
-const USAGE: &str = "hyprclick — background autoclicker for Hyprland
+const USAGE: &str = "hyprclick — background autoclicker for Hyprland and KDE Plasma
 
 usage:
   hyprclick                   open the window
   hyprclick toggle            start/stop clicking (what the hotkey runs)
   hyprclick start|stop|status
-  hyprclick setup [KEYS]      bind the hotkey + window rule in Hyprland's config
+  hyprclick setup [KEYS]      bind the hotkey + window rule (Hyprland config or
+                              KDE global shortcuts + KWin rule)
                               e.g. hyprclick setup 'ALT + J', 'CTRL + SHIFT + G',
-                              'mouse:275' (back side button), 'ALT + mouse:276'
+                              'mouse:275' (back side button, Hyprland only)
   hyprclick afk               anti-AFK in this terminal (target from the app)
   hyprclick pad               virtual gamepad service for Gamepad anti-AFK
                               (setup starts it at login, before Roblox)
@@ -33,11 +36,11 @@ usage:
 
 fn main() {
     let arg = std::env::args().nth(1);
-    // Everything (plugin, window list, hotkey, anti-AFK target) goes
-    // through Hyprland; other compositors aren't supported.
+    // The window list, hotkey and anti-AFK target come from the compositor;
+    // only Hyprland and KDE Plasma are supported.
     let help = matches!(arg.as_deref(), Some("help" | "-h" | "--help"));
-    if !help && std::env::var_os("HYPRLAND_INSTANCE_SIGNATURE").is_none() {
-        eprintln!("hyprclick only works on Hyprland (HYPRLAND_INSTANCE_SIGNATURE isn't set).");
+    if !help && desktop::detect().is_none() {
+        eprintln!("hyprclick runs on Hyprland or KDE Plasma (neither HYPRLAND_INSTANCE_SIGNATURE nor XDG_CURRENT_DESKTOP=KDE is set).");
         std::process::exit(1);
     }
     match arg.as_deref() {
@@ -124,7 +127,7 @@ fn daemon() {
 fn gui() {
     match ipc::send("role").as_deref() {
         Some("gui") => {
-            let _ = hypr::request(&format!("dispatch hl.dsp.focus({{window=\"class:^({APP_ID})$\"}})"));
+            desktop::focus_app();
             return;
         }
         // A headless daemon holds the socket: take over from it.
