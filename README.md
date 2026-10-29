@@ -26,13 +26,44 @@ hyprclick setup
 Needs on Hyprland:
 - Hyprland, tested on **0.56.2** (Lua config; the classic `hyprland.conf` is supported but untested). The plugin is compiled against Hyprland's internals on first launch, so other versions may not build.
 - `g++`, `pkg-config` and Hyprland's headers: run `hyprpm update` once (and again after Hyprland updates).
-- For Cursor mode and Gamepad anti-AFK: access to `/dev/uinput`, e.g. be in the `input` group with a rule like `KERNEL=="uinput", GROUP="input", MODE="0660"`.
+- For Cursor mode and Gamepad anti-AFK: access to `/dev/uinput` (see below).
 
 Needs on KDE: Plasma 6 (Wayland or X11), `kwriteconfig6`/`kreadconfig6` (part of KDE's base install) and the same `/dev/uinput` access. No compiler or headers.
 
+### `/dev/uinput` access
+
+Cursor mode and Gamepad anti-AFK create a virtual mouse and pad, which needs write access to `/dev/uinput`. Once per machine:
+
+```bash
+sudo usermod -aG input $USER
+echo 'KERNEL=="uinput", GROUP="input", MODE="0660"' | sudo tee /etc/udev/rules.d/99-hyprclick-uinput.rules
+echo uinput | sudo tee /etc/modules-load.d/uinput.conf
+```
+
+Then reboot (or log out and back in, and run `sudo modprobe uinput && sudo udevadm trigger`). The error "/dev/uinput: Permission denied (are you in the 'input' group?)" means this step is missing.
+
 ## KDE Plasma
 
-Same install. `hyprclick setup` on KDE:
+### Quick start
+
+1. Run the [install](#install) commands in Konsole, and set up [`/dev/uinput` access](#devuinput-access) if you haven't.
+2. Open hyprclick: `hyprclick` in Konsole (or `hyprclick & disown` to close the terminal afterwards).
+3. **Target** tab: pick your game (Roblox is `org.vinegarhq.Sober`) from the dropdown.
+4. Mode **Cursor**. To always click the same spot, turn on **Lock cursor to the picked spot**, then press **Pick on screen** and hover the spot in the game for 3 seconds.
+5. **Click** tab: set the speed.
+6. Press **Alt+H** to start, and again to stop. While the lock is on, your mouse is pulled back to the spot before every click, so use Alt+H rather than the button to stop.
+7. Optional, **AFK** tab: choose **Gamepad** and switch Anti-AFK on. Roblox only reacts to it while you're inside a game.
+
+### Troubleshooting
+
+- **Alt+H does nothing**: run `hyprclick setup` again and check that "hyprclick" is listed in System Settings → Shortcuts. If you picked another key there, make sure it isn't already used by something else.
+- **Clicking won't start, red "Window mode needs Hyprland"**: switch the mode to Cursor. Settings are shared between desktops, so a Window mode picked on Hyprland comes along. Picking Cursor on KDE also makes Hyprland open in Cursor mode until you switch back.
+- **Sober (Roblox) won't open after switching sessions**, with an error about `/run/user/1000/doc`: Flatpak's file portal lost its mount. Fix: `systemctl --user restart xdg-document-portal`, then start Sober again.
+- **The first clicks after opening hyprclick are missed**: KWin takes about a second to accept the new virtual mouse. Only the first start after opening is affected.
+
+### What setup does
+
+`hyprclick setup` on KDE:
 - adds a hidden `~/.local/share/applications/hyprclick-toggle.desktop` that runs `hyprclick toggle` and binds it as a global shortcut through kglobalaccel. It shows up in System Settings → Shortcuts as "hyprclick". KDE global shortcuts can't be mouse buttons. To use a side button, bind a key here, then map the button to that key in System Settings → Mouse.
 - adds a KWin window rule (`~/.config/kwinrulesrc`, group `hyprclick`) that opens the window centered.
 - starts the virtual gamepad at login through `~/.config/autostart/hyprclick-pad.desktop`.
