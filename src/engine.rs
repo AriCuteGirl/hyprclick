@@ -83,17 +83,21 @@ impl Engine {
         let x = (cfg.pos[0] as f64 * target.size[0]).round();
         let y = (cfg.pos[1] as f64 * target.size[1]).round();
         let reply = hypr::request(&format!(
-            "hyprclick start address:{} {x} {y} {} {} {} {}",
+            "hyprclick start address:{} {x} {y} {} {} {} {} {}",
             target.address,
             cfg.button.code(),
             cfg.interval().as_nanos(),
             cfg.hold().as_nanos(),
-            cfg.pause_when_hidden as u8
+            cfg.pause_when_hidden as u8,
+            cfg.at_mouse as u8
         ))?;
         if reply.trim() != "ok" {
             return Err(reply.trim().to_string());
         }
         self.running = Some(Running::Plugin);
+        if cfg.at_mouse {
+            return Ok(format!("{} @ where the mouse is", target.class));
+        }
         Ok(format!("{} @ {x},{y}", target.class))
     }
 

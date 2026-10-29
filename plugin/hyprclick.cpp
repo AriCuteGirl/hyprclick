@@ -7,7 +7,7 @@
 //
 // Control (hyprctl socket, one request per line):
 //   hyprclick ping                     -> "hyprclick ok <version> <path of this .so>"
-//   hyprclick start <selector> <x> <y> <button> <interval_ns> <hold_ns> [only_visible]
+//   hyprclick start <selector> <x> <y> <button> <interval_ns> <hold_ns> [only_visible] [at_mouse]
 //   hyprclick click <selector> <x> <y> <button>
 //   hyprclick stop
 //   hyprclick status
@@ -35,6 +35,8 @@
 #include <hyprland/src/desktop/state/ViewState.hpp>
 #include <hyprland/src/desktop/state/ViewQuery.hpp>
 #include <hyprland/src/desktop/view/Window.hpp>
+#include <hyprland/src/event/EventBus.hpp>
+#include <hyprland/src/protocols/XDGShell.hpp>
 #include <hyprland/src/helpers/time/Time.hpp>
 #include <hyprland/src/managers/SeatManager.hpp>
 #include <hyprland/src/managers/input/InputManager.hpp>
@@ -44,7 +46,7 @@
 inline HANDLE PHANDLE = nullptr;
 
 // Bump on any behaviour change: the app reloads a plugin whose version differs.
-constexpr int HYPRCLICK_VERSION = 5;
+constexpr int HYPRCLICK_VERSION = 6;
 
 namespace {
     struct SClicker {
@@ -58,6 +60,10 @@ namespace {
         bool               restorePending = false;
         WP<CWLSurfaceResource> directSurf; // set while we drive the target's wl_pointer directly
         bool               onlyVisible = false; // pause while the target's workspace isn't shown
+        // at_mouse: click where the target's own pointer last was (where the
+        // user's real mouse last sat inside it) instead of a fixed spot.
+        bool               atMouse   = false;
+        std::optional<Vector2D> lastMouse;
         bool               paused      = false;
         uint64_t           clicks     = 0;
         std::string        lastError;
@@ -67,6 +73,7 @@ namespace {
         int                holdFd  = -1;
         int                restoreFd  = -1;
         int                fireFd  = -1;
+        CHyprSignalListener mouseMoveListener;
         wl_event_source*   tickSrc = nullptr;
         wl_event_source*   fireSrc = nullptr;
         wl_event_source*   holdSrc = nullptr;
@@ -258,6 +265,28 @@ namespace {
     constexpr uint64_t X11_RAISE_SETTLE_NS = 2'000'000;
     constexpr auto     X11_RAISE_FRESH     = std::chrono::milliseconds(50);
 
+    // Surface-local coordinates of global `pos` in `window`, clamped inside it.
+    Vector2D toLocal(PHLWINDOW window, const Vector2D& pos) {
+        const auto BOX   = window->getWindowMainSurfaceBox();
+        Vector2D   local = pos - BOX.pos();
+        if (const auto XDG = window->m_xdgSurface.lock())
+            local = local + XDG->m_current.geometry.pos();
+        return {std::clamp(local.x, 0.0, std::max(0.0, BOX.w - 1)), std::clamp(local.y, 0.0, std::max(0.0, BOX.h - 1))};
+    }
+
+    // Track where the user's real mouse is inside the target, i.e. where the
+    // client's own pointer stays after the mouse leaves. Pointer focus is
+    // still the pre-move surface here, so moves landing outside are skipped.
+    void onMouseMove(Vector2D pos) {
+        auto&      C      = g_clicker;
+        const auto WINDOW = C.window.lock();
+        if (!WINDOW || !WINDOW->wlSurface() || g_pSeatManager->m_state.pointerFocus.lock() != WINDOW->wlSurface()->resource())
+            return;
+        if (!WINDOW->getWindowMainSurfaceBox().containsPoint(pos))
+            return;
+        C.lastMouse = toLocal(WINDOW, pos);
+    }
+
     // Returns true when the click should wait for the raise to be applied.
     bool raiseX11(PHLWINDOW window) {
         if (!window->m_isX11)
@@ -277,6 +306,10 @@ namespace {
         const auto WINDOW = C.window.lock();
         if (!C.running || !WINDOW || !WINDOW->m_isMapped)
             return;
+
+        // Never seen the user's mouse in there yet: fall back to the given spot.
+        if (C.atMouse && C.lastMouse)
+            C.pos = *C.lastMouse;
 
         activateX11(WINDOW);
 
@@ -330,10 +363,10 @@ namespace {
         double      x = 0, y = 0;
         uint32_t    button = 272;
         uint64_t    intervalNs = 0, holdNs = 0;
-        uint32_t    onlyVisible = 0;
+        uint32_t    onlyVisible = 0, atMouse = 0;
         if (!(args >> selector >> x >> y >> button >> intervalNs >> holdNs))
             return "error: usage: hyprclick start <selector> <x> <y> <button> <interval_ns> <hold_ns> [only_visible]";
-        args >> onlyVisible;
+        args >> onlyVisible >> atMouse;
         if (button < 272 || button > 279)
             return "error: button must be 272..279";
         if (intervalNs < 100'000)
@@ -345,6 +378,8 @@ namespace {
 
         stopClicker();
         auto& C      = g_clicker;
+        if (C.window.lock() != WINDOW)
+            C.lastMouse.reset();
         C.window     = WINDOW;
         C.pos        = {x, y};
         C.button     = button;
@@ -352,6 +387,7 @@ namespace {
         C.holdNs     = std::min(holdNs, intervalNs * 9 / 10);
         C.clicks      = 0;
         C.onlyVisible = onlyVisible != 0;
+        C.atMouse     = atMouse != 0;
         C.paused      = false;
         C.running     = true;
         C.lastError.clear();
@@ -423,6 +459,8 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
     C.fireFd     = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC);
     C.fireSrc    = wl_event_loop_add_fd(g_pCompositor->m_wlEventLoop, C.fireFd, WL_EVENT_READABLE, onFire, nullptr);
 
+    C.mouseMoveListener = Event::bus()->m_events.input.mouse.move.listen([](Vector2D pos, Event::SCallbackInfo&) { onMouseMove(pos); });
+
     HyprlandAPI::registerHyprCtlCommand(PHANDLE, SHyprCtlCommand{.name = "hyprclick", .exact = false, .fn = onCommand});
 
     return {"hyprclick", "Click inside windows without focusing them", "ari", "1.0"};
@@ -430,6 +468,7 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
 
 APICALL EXPORT void PLUGIN_EXIT() {
     auto& C = g_clicker;
+    C.mouseMoveListener.reset();
     stopClicker();
     if (C.tickSrc)
         wl_event_source_remove(C.tickSrc);

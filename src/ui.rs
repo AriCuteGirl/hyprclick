@@ -314,6 +314,17 @@ impl App {
             });
 
             ui.add_space(2.0);
+            let opts = [(false, format!("{I_TARGET}  Picked spot")), (true, format!("{I_CURSOR}  Where mouse is"))];
+            segmented(ui, "click_at", &mut c.cfg.at_mouse, &opts);
+            if c.cfg.at_mouse {
+                ui.label(
+                    RichText::new("Doesn't move the game's pointer. Clicks wherever your mouse last was inside the window (until then, the picked spot).")
+                        .color(WEAK)
+                        .size(12.5),
+                );
+                return;
+            }
+
             position_pad(ui, &mut c.cfg.pos, target.as_ref().map(|t| t.size), self.pick_until.is_some());
 
             ui.horizontal(|ui| {

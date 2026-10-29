@@ -98,6 +98,9 @@ pub struct Config {
     pub cursor_only_in_target: bool,
     /// Window mode: pause while the target's workspace isn't on any monitor.
     pub pause_when_hidden: bool,
+    /// Window mode: click where the target's pointer already is (where the
+    /// mouse last was inside it) instead of moving it to `pos`.
+    pub at_mouse: bool,
     pub notify: bool,
 }
 
@@ -115,6 +118,7 @@ impl Default for Config {
             hold_ms: 15.0,
             cursor_only_in_target: false,
             pause_when_hidden: true,
+            at_mouse: false,
             notify: true,
         }
     }

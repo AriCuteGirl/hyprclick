@@ -8,6 +8,8 @@ Background autoclicker for Hyprland, written in Rust with an egui UI.
 - **Cursor**: classic. A uinput virtual mouse clicks wherever the cursor is. Optionally it only clicks while the target window has focus.
 - **Gamepad**: a virtual Xbox 360 pad (the roblox-caffeine trick). Games read it in the background. In Roblox, RT uses the tool.
 
+Window mode clicks either at a picked spot or "where the mouse is": the spot your mouse last was inside the window, so the game's pointer never moves.
+
 Button: left/right/middle (or pad button). Speed: 0.1–1000 CPS. Hold duration is off by default, so press and release go out together.
 
 ## Use
