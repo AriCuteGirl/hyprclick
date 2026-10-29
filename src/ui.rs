@@ -549,6 +549,9 @@ impl App {
             if let Some(e) = self.afk_err.as_ref().or(s.error.as_ref()) {
                 ui.label(RichText::new(format!("⚠ {e}")).color(pal().bad).size(11.5));
             }
+            if let (true, Some(w)) = (s.running, &s.warning) {
+                ui.label(RichText::new(format!("! {w}")).color(pal().accent2).size(11.0));
+            }
             if s.running {
                 ui.label(RichText::new(&s.desc).color(pal().weak).font(mono(11.0)));
             }

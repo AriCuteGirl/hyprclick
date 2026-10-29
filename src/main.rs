@@ -27,6 +27,8 @@ usage:
                               e.g. hyprclick setup 'ALT + J', 'CTRL + SHIFT + G',
                               'mouse:275' (back side button), 'ALT + mouse:276'
   hyprclick afk               anti-AFK in this terminal (target from the app)
+  hyprclick pad               virtual gamepad service for Gamepad anti-AFK
+                              (setup starts it at login, before Roblox)
 ";
 
 fn main() {
@@ -42,6 +44,7 @@ fn main() {
         Some("daemon") => daemon(),
         Some("setup") => setup(std::env::args().nth(2)),
         Some("afk") => afk::run_terminal(&Config::load()),
+        Some("pad") => afk::run_pad_service(),
         _ => print!("{USAGE}"),
     }
 }

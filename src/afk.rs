@@ -3,7 +3,10 @@
 //! - Window: the hyprclick plugin wiggles the target's own pointer (or taps
 //!   right-click) in the background, like a click, only for that window.
 //! - Gamepad: the roblox-caffeine way, a virtual Xbox pad nudges both sticks.
-//!   Games read pads even when unfocused, but every game sees it.
+//!   Games read pads even when unfocused, but every game sees it. Roblox
+//!   (Sober) only picks up pads that exist when it starts, so the pad lives
+//!   in a small always-running service (`hyprclick pad`, started at login by
+//!   `hyprclick setup`) and the nudges are sent to it.
 //! Either way it's locked to the target window and stops if that window goes
 //! away (closed or crashed).
 
@@ -13,6 +16,9 @@ use chrono::{DateTime, Local};
 use evdev::uinput::VirtualDevice;
 use evdev::{AbsInfo, AbsoluteAxisCode, AttributeSet, BusType, EventType, InputEvent, InputId, KeyCode, UinputAbsSetup};
 use std::collections::VecDeque;
+use std::io::{BufRead, BufReader, Write};
+use std::os::unix::net::{UnixListener, UnixStream};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -35,6 +41,8 @@ pub struct Nudge {
 #[derive(Default)]
 pub struct Status {
     pub running: bool,
+    /// Not fatal, e.g. "Roblox hasn't picked up the pad yet".
+    pub warning: Option<String>,
     /// What it's poking, e.g. "org.vinegarhq.Sober · window".
     pub desc: String,
     pub interval: Duration,
@@ -115,8 +123,13 @@ impl AntiAfk {
                 hypr::plugin::ensure()?;
                 Driver::Window { address: target.address.clone(), action: cfg.afk_action }
             }
-            AfkMethod::Gamepad => Driver::Pad(make_pad()?),
+            AfkMethod::Gamepad => {
+                ensure_pad_service()?;
+                Driver::Pad
+            }
         };
+        let warning = (cfg.afk_method == AfkMethod::Gamepad && pad_seen_by_game() == Some(false))
+            .then(|| "Roblox hasn't picked up the virtual pad: restart Roblox once (the pad stays running from now on)".to_string());
         let method = match cfg.afk_method {
             AfkMethod::Window => "window",
             AfkMethod::Gamepad => "gamepad",
@@ -127,6 +140,7 @@ impl AntiAfk {
             *s = Status {
                 running: true,
                 desc: format!("{} · {method}", target.class),
+                warning,
                 interval,
                 started: Some(Instant::now()),
                 ..Default::default()
@@ -135,10 +149,6 @@ impl AntiAfk {
         let (status, stop2, cb) = (self.status.clone(), stop.clone(), self.on_nudge.clone());
         let address = target.address;
         std::thread::spawn(move || {
-            if matches!(driver, Driver::Pad(_)) {
-                // Let SDL/Roblox pick up the new pad before the first nudge.
-                std::thread::sleep(Duration::from_millis(800));
-            }
             let mut number = 0;
             let mut rng = Instant::now().elapsed().as_nanos() as u64 ^ std::process::id() as u64 ^ 0x9e3779b97f4a7c15;
             while !stop2.load(Ordering::Relaxed) {
@@ -185,7 +195,6 @@ impl AntiAfk {
                     }
                 }
             }
-            // Dropping `driver` here unplugs the virtual controller.
         });
         self.stop = Some(stop);
         Ok(())
@@ -217,15 +226,20 @@ fn random_sign(state: &mut u64) -> i32 {
 
 enum Driver {
     Window { address: String, action: AfkAction },
-    Pad(VirtualDevice),
+    /// Nudges go to the `hyprclick pad` service.
+    Pad,
 }
 
 impl Driver {
     /// One anti-AFK poke in diagonal (sx, sy); returns what to show.
     fn nudge(&mut self, sx: i32, sy: i32) -> Result<&'static str, String> {
         match self {
-            Driver::Pad(pad) => {
-                nudge_pad(pad, sx * STICK_DEFLECTION, sy * STICK_DEFLECTION)?;
+            Driver::Pad => {
+                ensure_pad_service()?;
+                let reply = pad_request(&format!("nudge {} {}", sx * STICK_DEFLECTION, sy * STICK_DEFLECTION)).ok_or("pad service not answering")?;
+                if reply != "ok" {
+                    return Err(reply);
+                }
                 Ok(direction(sx, sy))
             }
             Driver::Window { address, action } => {
@@ -314,6 +328,128 @@ fn make_pad() -> Result<VirtualDevice, String> {
     b.build().map_err(uinput_err)
 }
 
+fn pad_socket() -> PathBuf {
+    let runtime = std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/tmp".into());
+    PathBuf::from(runtime).join("hyprclick-pad.sock")
+}
+
+fn pad_request(cmd: &str) -> Option<String> {
+    let mut sock = UnixStream::connect(pad_socket()).ok()?;
+    let _ = sock.set_read_timeout(Some(Duration::from_secs(3)));
+    sock.write_all(format!("{cmd}\n").as_bytes()).ok()?;
+    let mut reply = String::new();
+    BufReader::new(sock).read_line(&mut reply).ok()?;
+    Some(reply.trim().to_string())
+}
+
+/// The pad's /dev/input node, if the service is running.
+fn pad_node() -> Option<String> {
+    pad_request("ping")?.strip_prefix("pad ok ").map(String::from)
+}
+
+/// Start `hyprclick pad` in the background if it isn't running.
+pub fn ensure_pad_service() -> Result<(), String> {
+    if pad_node().is_some() {
+        return Ok(());
+    }
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    std::process::Command::new(exe)
+        .arg("pad")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map_err(|e| e.to_string())?;
+    for _ in 0..30 {
+        std::thread::sleep(Duration::from_millis(100));
+        if pad_node().is_some() {
+            return Ok(());
+        }
+    }
+    Err("virtual pad service didn't start (/dev/uinput access?)".into())
+}
+
+/// Whether a Roblox/Sober process has the pad open. None if unknown.
+pub fn pad_seen_by_game() -> Option<bool> {
+    let node = pad_node()?;
+    let mut game_found = false;
+    for entry in std::fs::read_dir("/proc").ok()?.flatten() {
+        let pid = entry.file_name();
+        if !pid.to_string_lossy().bytes().all(|b| b.is_ascii_digit()) {
+            continue;
+        }
+        let comm = std::fs::read_to_string(entry.path().join("comm")).unwrap_or_default().to_lowercase();
+        let cmd = std::fs::read_to_string(entry.path().join("cmdline")).unwrap_or_default().to_lowercase();
+        if !(comm.contains("sober") || cmd.contains("sober") || cmd.contains("roblox")) {
+            continue;
+        }
+        game_found = true;
+        for fd in std::fs::read_dir(entry.path().join("fd")).into_iter().flatten().flatten() {
+            if std::fs::read_link(fd.path()).is_ok_and(|t| t.to_string_lossy() == node) {
+                return Some(true);
+            }
+        }
+    }
+    game_found.then_some(false)
+}
+
+/// `hyprclick pad`: own the virtual Xbox pad for as long as the session
+/// runs (started at login), and nudge it on request.
+pub fn run_pad_service() {
+    if pad_node().is_some() {
+        println!("hyprclick pad: already running");
+        return;
+    }
+    let path = pad_socket();
+    let _ = std::fs::remove_file(&path);
+    let mut pad = match make_pad() {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("hyprclick pad: {e}");
+            std::process::exit(1);
+        }
+    };
+    let node = pad
+        .enumerate_dev_nodes_blocking()
+        .ok()
+        .and_then(|mut nodes| nodes.next())
+        .and_then(Result::ok)
+        .map(|p| p.display().to_string())
+        .unwrap_or_default();
+    let listener = match UnixListener::bind(&path) {
+        Ok(l) => l,
+        Err(e) => {
+            eprintln!("hyprclick pad: {e}");
+            std::process::exit(1);
+        }
+    };
+    for stream in listener.incoming().flatten() {
+        let mut line = String::new();
+        if BufReader::new(&stream).read_line(&mut line).is_err() {
+            continue;
+        }
+        let mut parts = line.split_whitespace();
+        let reply = match parts.next() {
+            Some("ping") => format!("pad ok {node}"),
+            Some("nudge") => {
+                let x = parts.next().and_then(|v| v.parse().ok()).unwrap_or(0);
+                let y = parts.next().and_then(|v| v.parse().ok()).unwrap_or(0);
+                match nudge_pad(&mut pad, x, y) {
+                    Ok(()) => "ok".into(),
+                    Err(e) => format!("error: {e}"),
+                }
+            }
+            Some("quit") => {
+                let _ = (&stream).write_all(b"bye\n");
+                break;
+            }
+            _ => "error: unknown command".into(),
+        };
+        let _ = (&stream).write_all(format!("{reply}\n").as_bytes());
+    }
+    let _ = std::fs::remove_file(&path);
+}
+
 /// `hyprclick afk`: run in the terminal with caffeine-style output.
 pub fn run_terminal(cfg: &Config) {
     const YELLOW: &str = "\x1b[93m";
@@ -347,6 +483,11 @@ pub fn run_terminal(cfg: &Config) {
         }
         if let Some(e) = &s.error {
             println!("{CLEAR}error: {e}");
+        }
+        if let Some(w) = &s.warning {
+            if shown == 0 && tick == 0 {
+                println!("{YELLOW}!{RESET} {w}\n");
+            }
         }
         let new: Vec<Nudge> = s.nudges.iter().filter(|n| n.number > shown).cloned().collect();
         for n in new {

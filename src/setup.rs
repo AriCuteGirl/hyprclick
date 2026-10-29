@@ -57,6 +57,9 @@ pub fn apply(hotkey: &Hotkey) -> Result<String, String> {
         return Err(format!("Hyprland rejected it: {}", ours.join(" / ")));
     }
 
+    // Start the pad now too, so it's there before the next Roblox launch.
+    let _ = crate::afk::ensure_pad_service();
+
     let mut report = format!("{} → hyprclick toggle  ({})", hotkey.label(), managed.display());
     let dupes = other_binds(&dir, &managed, &main);
     if !dupes.is_empty() {
@@ -76,7 +79,9 @@ fn lua_file(hk: &Hotkey) -> String {
          hl.bind(\"{combo}\", hl.dsp.exec_cmd(\"{exe} toggle\"), {{ description = \"hyprclick: Toggle autoclicker\" }})\n\n\
          hl.window_rule({{match = {{class = \"^({APP_ID})$\" }}, float = true}})\n\
          hl.window_rule({{match = {{class = \"^({APP_ID})$\" }}, size = {{{w}, {h}}}}})\n\
-         hl.window_rule({{match = {{class = \"^({APP_ID})$\" }}, center = true}})\n",
+         hl.window_rule({{match = {{class = \"^({APP_ID})$\" }}, center = true}})\n\n\
+         -- Virtual gamepad for Gamepad anti-AFK; must exist before Roblox starts.\n\
+         hl.on(\"hyprland.start\", function() hl.exec_cmd(\"{exe} pad\") end)\n",
         combo = hk.combo(),
         exe = exe(),
     )
@@ -87,7 +92,8 @@ fn conf_file(hk: &Hotkey, rules: bool) -> String {
     let mut out = format!(
         "# Managed by hyprclick: change the key in its Key tab, or run: hyprclick setup \"ALT + J\"\n\
          # (edits here get overwritten)\n\n\
-         bind = {mods}, {key}, exec, {exe} toggle\n",
+         bind = {mods}, {key}, exec, {exe} toggle\n\
+         exec-once = {exe} pad\n",
         mods = hk.mods.join(" "),
         key = hk.key,
         exe = exe(),

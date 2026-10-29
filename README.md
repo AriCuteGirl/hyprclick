@@ -16,7 +16,7 @@ Fail-safe: clicking stops, with a notification, when the target window closes or
 Every few minutes (default 10) it pokes the target window, so Roblox doesn't kick you for idling:
 
 - **Window**: the plugin moves the target's own pointer 8 px in a random diagonal (or taps right-click), in the background, only for that window.
-- **Gamepad**: the roblox-caffeine method. A virtual Xbox pad nudges both sticks; every game sees it.
+- **Gamepad**: the roblox-caffeine method. A virtual Xbox pad nudges both sticks; every game sees it. Roblox (Sober) only notices pads that exist when it starts, so the pad lives in `hyprclick pad`, which `hyprclick setup` starts at login. If Roblox was already open when the pad appeared, restart Roblox once; the AFK tab warns when Roblox hasn't picked it up.
 
 It's locked to the exact target window and stops when that window goes away. It runs from the app's AFK tab, or in a terminal with caffeine-style output: `hyprclick afk`.
 
