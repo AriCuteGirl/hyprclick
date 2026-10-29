@@ -47,7 +47,7 @@
 inline HANDLE PHANDLE = nullptr;
 
 // Bump on any behaviour change: the app reloads a plugin whose version differs.
-constexpr int HYPRCLICK_VERSION = 9;
+constexpr int HYPRCLICK_VERSION = 10;
 
 namespace {
     struct SClicker {
@@ -486,8 +486,13 @@ namespace {
         if (sub == "status") {
             const auto& C = g_clicker;
             const auto MOUSE = C.lastMouse ? std::format("{:.0f},{:.0f}", C.lastMouse->x, C.lastMouse->y) : std::string{"-"};
-            return std::format("running={} paused={} clicks={} mouse={} error={}", C.running ? 1 : 0, C.paused ? 1 : 0, C.clicks, MOUSE,
-                               C.lastError.empty() ? "-" : C.lastError);
+            // What the user's pointer is on, and whether that's the target.
+            const auto FOCUS  = g_pSeatManager->m_state.pointerFocus.lock();
+            const auto UNDER  = FOCUS ? Desktop::viewState()->query().surface(FOCUS).runWindow() : nullptr;
+            const auto TARGET = C.window.lock();
+            const bool ON     = TARGET && TARGET->wlSurface() && FOCUS == TARGET->wlSurface()->resource();
+            return std::format("running={} paused={} clicks={} mouse={} hover={}{} error={}", C.running ? 1 : 0, C.paused ? 1 : 0, C.clicks, MOUSE,
+                               UNDER ? UNDER->m_class : std::string{"-"}, ON ? "(target)" : "", C.lastError.empty() ? "-" : C.lastError);
         }
         return "error: unknown subcommand";
     }
