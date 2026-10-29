@@ -14,8 +14,24 @@
 // <selector> is a Hyprland window selector without spaces, e.g. address:0x55d0c0ffee.
 // <button> is a linux input code: 272 left, 273 right, 274 middle.
 
+#include <dlfcn.h>
+#include <sys/timerfd.h>
+#include <unistd.h>
+
+// Everything from the standard library up front, so none of it gets
+// compiled under the #define below.
+#include <bits/stdc++.h>
+
+// The seat's pointer list and each pointer's entered surface are private;
+// we need them to drive the target's wl_pointer without moving seat focus.
+// Must be the first Hyprland header so the include guard doesn't skip it.
+#define private public
+#include <hyprland/src/protocols/core/Seat.hpp>
+#undef private
+
 #include <hyprland/src/plugins/PluginAPI.hpp>
 #include <hyprland/src/Compositor.hpp>
+#include <hyprland/src/desktop/state/FocusState.hpp>
 #include <hyprland/src/desktop/state/ViewState.hpp>
 #include <hyprland/src/desktop/state/ViewQuery.hpp>
 #include <hyprland/src/desktop/view/Window.hpp>
@@ -25,17 +41,10 @@
 #include <hyprland/src/protocols/core/Compositor.hpp>
 #include <hyprland/src/xwayland/XSurface.hpp>
 
-#include <dlfcn.h>
-#include <sys/timerfd.h>
-#include <unistd.h>
-
-#include <format>
-#include <sstream>
-
 inline HANDLE PHANDLE = nullptr;
 
 // Bump on any behaviour change: the app reloads a plugin whose version differs.
-constexpr int HYPRCLICK_VERSION = 4;
+constexpr int HYPRCLICK_VERSION = 5;
 
 namespace {
     struct SClicker {
@@ -47,6 +56,7 @@ namespace {
         bool               running    = false;
         bool               pressed    = false;
         bool               restorePending = false;
+        WP<CWLSurfaceResource> directSurf; // set while we drive the target's wl_pointer directly
         bool               onlyVisible = false; // pause while the target's workspace isn't shown
         bool               paused      = false;
         uint64_t           clicks     = 0;
@@ -90,6 +100,22 @@ namespace {
 
     void restoreFocus() {
         g_clicker.restorePending = false;
+
+        if (const auto DIRECT = g_clicker.directSurf.lock()) {
+            g_clicker.directSurf.reset();
+            // The seat never moved, so just leave the target again, unless the
+            // user's real pointer has since moved onto it.
+            if (g_pSeatManager->m_state.pointerFocus.lock() == DIRECT)
+                return;
+            for (const auto& p : PROTO::seat->m_pointers) {
+                if (p && p->good() && p->m_currentSurface == DIRECT) {
+                    p->sendLeave();
+                    p->sendFrame();
+                }
+            }
+            return;
+        }
+
         // Recomputes focus + local coords from the real cursor, same path a
         // physical mouse move takes. Also covers the cursor already being over
         // the target: it moves the client's pointer back to the real spot.
@@ -109,6 +135,40 @@ namespace {
         }
     }
 
+    // The target client's wl_pointers, when we can drive them without touching
+    // the seat: none of them is in use on another surface (the user isn't
+    // hovering another window of the same client, e.g. another X11 window) and
+    // the user's pointer isn't on the target itself. Then the user's own
+    // pointer focus never changes (no hover/cursor flicker), and the target's
+    // cursor requests are ignored since it doesn't hold seat focus.
+    std::vector<SP<CWLPointerResource>> directPointers(SP<CWLSurfaceResource> surf) {
+        if (g_pSeatManager->m_state.pointerFocus.lock() == surf)
+            return {};
+        std::vector<SP<CWLPointerResource>> out;
+        for (const auto& p : PROTO::seat->m_pointers) {
+            if (!p || !p->good() || !p->m_owner || p->m_owner->client() != surf->client())
+                continue;
+            if (p->m_currentSurface && p->m_currentSurface != surf)
+                return {};
+            out.push_back(p);
+        }
+        return out;
+    }
+
+    // Games (Roblox) ignore clicks while unfocused. Mark an X11 target as the
+    // active X window; only while the user's focused window is native Wayland,
+    // so no X11 app the user types into loses its keyboard. Wayland keyboard
+    // focus is untouched either way.
+    void activateX11(PHLWINDOW window) {
+        if (!window->m_isX11)
+            return;
+        const auto FOCUSED = Desktop::focusState()->window();
+        if (FOCUSED && FOCUSED->m_isX11)
+            return;
+        if (const auto XSURF = window->m_xwaylandSurface.lock())
+            XSURF->activate(true);
+    }
+
     // Send button transitions to `window` at surface-local `pos`, then give
     // pointer focus back to the surface under the user's real cursor.
     // `holding`: the button stays down, so focus stays on the target until the
@@ -122,14 +182,28 @@ namespace {
         if (!SURF)
             return false;
 
-        const auto NOW = (uint32_t)Time::millis(Time::steadyNow());
+        const auto NOW     = (uint32_t)Time::millis(Time::steadyNow());
+        const auto POINTERS = directPointers(SURF);
 
-        g_pSeatManager->setPointerFocus(SURF, pos);
-        g_pSeatManager->sendPointerMotion(NOW, pos);
-        g_pSeatManager->sendPointerFrame();
-        for (const auto STATE : states) {
-            g_pSeatManager->sendPointerButton(NOW, button, STATE);
+        if (!POINTERS.empty()) {
+            for (const auto& p : POINTERS) {
+                p->sendEnter(SURF, pos); // no-op if still entered from the last click
+                p->sendMotion(NOW, pos);
+                p->sendFrame();
+                for (const auto STATE : states) {
+                    p->sendButton(NOW, button, STATE);
+                    p->sendFrame();
+                }
+            }
+            g_clicker.directSurf = SURF;
+        } else {
+            g_pSeatManager->setPointerFocus(SURF, pos);
+            g_pSeatManager->sendPointerMotion(NOW, pos);
             g_pSeatManager->sendPointerFrame();
+            for (const auto STATE : states) {
+                g_pSeatManager->sendPointerButton(NOW, button, STATE);
+                g_pSeatManager->sendPointerFrame();
+            }
         }
 
         if (holding) {
@@ -203,6 +277,8 @@ namespace {
         const auto WINDOW = C.window.lock();
         if (!C.running || !WINDOW || !WINDOW->m_isMapped)
             return;
+
+        activateX11(WINDOW);
 
         if (C.holdNs == 0) {
             if (!sendButtons(WINDOW, C.pos, C.button, {WL_POINTER_BUTTON_STATE_PRESSED, WL_POINTER_BUTTON_STATE_RELEASED}))
