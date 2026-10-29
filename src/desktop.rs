@@ -87,6 +87,14 @@ pub fn cursor_pos() -> Option<(f64, f64)> {
     }
 }
 
+/// Uncached cursor position (KDE caches snapshots for a moment).
+pub fn cursor_pos_now() -> Option<(f64, f64)> {
+    match get() {
+        Desktop::Hyprland => crate::hypr::cursor_pos(),
+        Desktop::Kde => crate::kde::cursor_pos_now(),
+    }
+}
+
 pub fn active_address() -> Option<String> {
     match get() {
         Desktop::Hyprland => crate::hypr::active_address(),

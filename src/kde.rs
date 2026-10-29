@@ -175,6 +175,11 @@ pub fn cursor_pos() -> Option<(f64, f64)> {
     snapshot().cursor
 }
 
+pub fn cursor_pos_now() -> Option<(f64, f64)> {
+    let v = run_script("reply([workspace.cursorPos.x, workspace.cursorPos.y]);").ok()?;
+    Some((v[0].as_f64()?, v[1].as_f64()?))
+}
+
 pub fn active_address() -> Option<String> {
     Some(snapshot().active).filter(|a| !a.is_empty())
 }

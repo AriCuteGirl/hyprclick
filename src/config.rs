@@ -73,6 +73,9 @@ pub struct Config {
     pub hold_ms: f64,
     /// Cursor mode: only click while the target window has focus.
     pub cursor_only_in_target: bool,
+    /// Cursor mode: pull the real cursor onto `pos` in the target before
+    /// every click (KDE's stand-in for Window mode's picked spot).
+    pub cursor_lock: bool,
     /// Window mode: pause while the target's workspace isn't on any monitor.
     pub pause_when_hidden: bool,
     /// Window mode: click where the target's pointer already is (where the
@@ -100,6 +103,7 @@ impl Default for Config {
             hold_enabled: false,
             hold_ms: 15.0,
             cursor_only_in_target: false,
+            cursor_lock: false,
             pause_when_hidden: true,
             at_mouse: false,
             notify: true,

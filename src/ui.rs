@@ -408,24 +408,35 @@ impl App {
                     toggle_switch(ui, &mut c.cfg.cursor_only_in_target);
                     ui.label(RichText::new("Only click while this window is focused").color(pal().text));
                 });
-                return;
-            }
-
-            ui.horizontal(|ui| {
-                toggle_switch(ui, &mut c.cfg.pause_when_hidden);
-                ui.label(RichText::new("Pause when target isn't on screen").color(pal().text));
-            });
-
-            ui.add_space(2.0);
-            let opts = [(false, format!("{I_TARGET}  Picked spot")), (true, format!("{I_CURSOR}  Where mouse is"))];
-            segmented(ui, "click_at", &mut c.cfg.at_mouse, &opts);
-            if c.cfg.at_mouse {
+                ui.horizontal(|ui| {
+                    toggle_switch(ui, &mut c.cfg.cursor_lock);
+                    ui.label(RichText::new("Lock cursor to the picked spot").color(pal().text));
+                });
+                if !c.cfg.cursor_lock {
+                    return;
+                }
                 ui.label(
-                    RichText::new("Doesn't move the game's pointer. Clicks wherever your mouse last was inside the window (until then, the picked spot).")
+                    RichText::new("Your mouse snaps back to the spot before every click while it runs. The window has to be visible there.")
                         .color(pal().weak)
                         .size(11.5),
                 );
-                return;
+            } else {
+                ui.horizontal(|ui| {
+                    toggle_switch(ui, &mut c.cfg.pause_when_hidden);
+                    ui.label(RichText::new("Pause when target isn't on screen").color(pal().text));
+                });
+
+                ui.add_space(2.0);
+                let opts = [(false, format!("{I_TARGET}  Picked spot")), (true, format!("{I_CURSOR}  Where mouse is"))];
+                segmented(ui, "click_at", &mut c.cfg.at_mouse, &opts);
+                if c.cfg.at_mouse {
+                    ui.label(
+                        RichText::new("Doesn't move the game's pointer. Clicks wherever your mouse last was inside the window (until then, the picked spot).")
+                            .color(pal().weak)
+                            .size(11.5),
+                    );
+                    return;
+                }
             }
 
             position_pad(ui, &mut c.cfg.pos, target.as_ref().map(|t| t.size), self.pick_until.is_some());

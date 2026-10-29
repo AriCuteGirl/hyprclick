@@ -15,6 +15,15 @@ use std::time::{Duration, Instant};
 type Device = Arc<Mutex<VirtualDevice>>;
 
 const KDE_FOCUS_POLL: Duration = Duration::from_millis(250);
+/// KWin drops events from a new uinput mouse for a few hundred ms (300 ms
+/// was too short, 1.5 s enough).
+const KDE_DEVICE_SETTLE: Duration = Duration::from_millis(1000);
+/// Cursor lock: re-read the target's geometry this often.
+const LOCK_REFRESH: Duration = Duration::from_secs(1);
+/// Cursor lock: at most this many correction moves per click, each given
+/// this long to reach the compositor.
+const LOCK_STEPS: usize = 8;
+const LOCK_SETTLE: Duration = Duration::from_millis(3);
 
 enum Running {
     Plugin,
@@ -106,20 +115,20 @@ impl Engine {
             None => {
                 let d = Arc::new(Mutex::new(make_mouse()?));
                 // libinput needs a moment to adopt a fresh device before it
-                // forwards its events.
-                std::thread::sleep(Duration::from_millis(250));
+                // forwards its events (KWin is slower about it).
+                std::thread::sleep(if desktop::get() == Desktop::Kde { KDE_DEVICE_SETTLE } else { Duration::from_millis(250) });
                 self.mouse = Some(d.clone());
                 d
             }
         };
         let code = cfg.button.code();
-        let gate = if cfg.cursor_only_in_target {
-            let target = desktop::find_target(&cfg.target_class, &cfg.target_title)
-                .ok_or_else(|| format!("window '{}' not found", cfg.target_class))?;
-            Some(target.address)
+        let target = if cfg.cursor_only_in_target || cfg.cursor_lock {
+            Some(desktop::find_target(&cfg.target_class, &cfg.target_title).ok_or_else(|| format!("window '{}' not found", cfg.target_class))?)
         } else {
             None
         };
+        let gate = target.as_ref().filter(|_| cfg.cursor_only_in_target).map(|t| t.address.clone());
+        let lock = target.as_ref().filter(|_| cfg.cursor_lock).map(|t| Mutex::new(SpotLock::new(t, cfg.pos, dev.clone())));
 
         let stop = Arc::new(AtomicBool::new(false));
         let focused = Arc::new(AtomicBool::new(true));
@@ -128,16 +137,84 @@ impl Engine {
             watch_focus(addr, focused.clone(), stop.clone());
         }
 
+        let locked = lock.is_some();
         let press = move |down: bool| {
             let ev = InputEvent::new(EventType::KEY.0, code, down as i32);
             let _ = dev.lock().unwrap().emit(&[ev]);
         };
-        let handle = spawn_loop(cfg, stop.clone(), self.clicks.clone(), move || focused.load(Ordering::Relaxed), press);
+        // The lock pulls the cursor back onto the spot before every click.
+        let allowed = move || focused.load(Ordering::Relaxed) && lock.as_ref().is_none_or(|l| l.lock().unwrap().pull());
+        let handle = spawn_loop(cfg, stop.clone(), self.clicks.clone(), allowed, press);
         self.running = Some(Running::Thread { stop, handle });
-        Ok(match gate {
-            Some(_) => format!("cursor, only in {}", cfg.target_class),
-            None => "at cursor".into(),
+        Ok(match (locked, gate) {
+            (true, _) => format!("cursor locked to {}", cfg.target_class),
+            (false, Some(_)) => format!("cursor, only in {}", cfg.target_class),
+            (false, None) => "at cursor".into(),
         })
+    }
+}
+
+/// Keeps the real cursor on a spot inside a window. Compositors don't let
+/// apps place the cursor, so it's walked there with relative virtual-mouse
+/// moves, measuring how far each one went (pointer acceleration).
+struct SpotLock {
+    address: String,
+    pos: [f32; 2],
+    mouse: Device,
+    spot: Option<(f64, f64)>,
+    refreshed: Option<Instant>,
+    /// Pixels moved per unit sent, per axis.
+    gain: [f64; 2],
+}
+
+impl SpotLock {
+    fn new(target: &desktop::Client, pos: [f32; 2], mouse: Device) -> Self {
+        Self { address: target.address.clone(), pos, mouse, spot: None, refreshed: None, gain: [1.0, 1.0] }
+    }
+
+    /// The spot in global coordinates; follows the window if it moves.
+    /// None while the window is gone or not on screen.
+    fn spot(&mut self) -> Option<(f64, f64)> {
+        if self.refreshed.is_none_or(|t| t.elapsed() > LOCK_REFRESH) {
+            self.refreshed = Some(Instant::now());
+            self.spot = desktop::clients().into_iter().find(|c| c.address == self.address && c.visible).map(|w| {
+                let inside = |i: usize| (self.pos[i] as f64 * w.size[i]).round().clamp(0.0, (w.size[i] - 1.0).max(0.0));
+                (w.at[0] + inside(0), w.at[1] + inside(1))
+            });
+        }
+        self.spot
+    }
+
+    /// Move the cursor onto the spot. False if it can't get there (window
+    /// hidden, or the cursor is held elsewhere): skip this click then.
+    fn pull(&mut self) -> bool {
+        let Some((tx, ty)) = self.spot() else { return false };
+        let Some(mut at) = desktop::cursor_pos_now() else { return false };
+        for _ in 0..LOCK_STEPS {
+            let d = [tx - at.0, ty - at.1];
+            if d[0].abs() < 1.0 && d[1].abs() < 1.0 {
+                return true;
+            }
+            let send: Vec<i32> = (0..2)
+                .map(|i| {
+                    let units = (d[i] / self.gain[i]).round() as i32;
+                    if units == 0 && d[i].abs() >= 1.0 { d[i].signum() as i32 } else { units }
+                })
+                .collect();
+            let rel = |axis: RelativeAxisCode, v: i32| InputEvent::new(EventType::RELATIVE.0, axis.0, v);
+            if self.mouse.lock().unwrap().emit(&[rel(RelativeAxisCode::REL_X, send[0]), rel(RelativeAxisCode::REL_Y, send[1])]).is_err() {
+                return false;
+            }
+            std::thread::sleep(LOCK_SETTLE);
+            let Some(now) = desktop::cursor_pos_now() else { return false };
+            for (i, moved) in [now.0 - at.0, now.1 - at.1].into_iter().enumerate() {
+                if send[i] != 0 && moved != 0.0 && moved.signum() == send[i].signum() as f64 {
+                    self.gain[i] = (moved / send[i] as f64).clamp(0.1, 10.0);
+                }
+            }
+            at = now;
+        }
+        false
     }
 }
 

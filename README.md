@@ -45,12 +45,12 @@ The window list, focus and cursor position come from small KWin scripts that hyp
 - The RemoteDesktop portal / libei, and KWin's fake-input protocol: these drive the real seat pointer, which is what Cursor mode already does.
 - KWin scripts and effects can't send input.
 
-So on KDE use **Cursor** mode, with "Only click while this window is focused" if you like, and **Gamepad** anti-AFK. A fresh config on KDE starts in those modes.
+So on KDE use **Cursor** mode, with "Lock cursor to the picked spot" to always hit the same spot in the game (your mouse is taken over while it clicks) or "Only click while this window is focused", and **Gamepad** anti-AFK. A fresh config on KDE starts in those modes.
 
 ## Modes
 
 - **Window**: clicks a chosen spot inside a chosen window. The window doesn't need focus and your cursor stays where it is. By default it pauses while the window's workspace isn't shown on any monitor, so Roblox on one screen keeps clicking while you use the other. A small Hyprland plugin (`plugin/hyprclick.cpp`) sends pointer events straight to the window's surface, timed by a timerfd inside Hyprland. It clicks at a picked spot (always that spot; your cursor gets pulled there if it's inside the window) or "where the mouse is" (right under your cursor while it's inside, else where it last was).
-- **Cursor**: classic. A uinput virtual mouse clicks wherever the cursor is. Optionally it only clicks while the target window has focus.
+- **Cursor**: classic. A uinput virtual mouse clicks wherever the cursor is. Optionally it only clicks while the target window has focus, and/or locks the cursor to the picked spot in the target: before every click the real cursor is pulled back onto that spot, so your mouse is taken over while it runs. That's the closest thing to Window mode's picked spot on KDE.
 
 Button: left/right/middle. Speed: 0.1–1000 CPS. Hold duration is off by default (instant press + release).
 
