@@ -1,5 +1,6 @@
 //! The toggle hotkey: modifiers + one key or mouse button, in Hyprland's
 //! names ("ALT + H", "CTRL + SHIFT + G", "mouse:275" for the back side button).
+//! On KDE the same thing is turned into a Qt key code for kglobalaccel.
 
 use eframe::egui::{Key, Modifiers, PointerButton};
 use serde::{Deserialize, Serialize};
@@ -39,6 +40,24 @@ impl Hotkey {
     /// everywhere (e.g. "back" stops working in the browser).
     pub fn bare_mouse(&self) -> bool {
         self.mods.is_empty() && self.key.starts_with("mouse:")
+    }
+
+    /// Qt key code (modifiers included), what KDE's global shortcuts store.
+    /// KDE can't bind mouse buttons as global shortcuts.
+    pub fn qt_key(&self) -> Result<i32, String> {
+        if self.key.starts_with("mouse:") {
+            return Err("KDE global shortcuts can't use mouse buttons: bind a key, then map the button to it in System Settings → Mouse → extra buttons".into());
+        }
+        let mods = self.mods.iter().fold(0, |m, name| {
+            m | match name.as_str() {
+                "SHIFT" => 0x0200_0000,
+                "CTRL" => 0x0400_0000,
+                "ALT" => 0x0800_0000,
+                _ => 0x1000_0000, // SUPER = Meta
+            }
+        });
+        let key = qt_keycode(&self.key).ok_or_else(|| format!("KDE doesn't know the key '{}'", self.key))?;
+        Ok(mods | key)
     }
 
     /// Parse "ALT + SHIFT + J", "alt+j", "mouse:275", "CTRL + mouse:276".
@@ -150,5 +169,48 @@ fn keysym(key: Key) -> Option<&'static str> {
                 n => n,
             }
         }
+    })
+}
+
+/// xkb keysym name (as stored in `Hotkey::key`) -> Qt::Key.
+fn qt_keycode(name: &str) -> Option<i32> {
+    let mut chars = name.chars();
+    if let (Some(c), None) = (chars.next(), chars.next()) {
+        // Letters, digits and punctuation are their (uppercase) ASCII code.
+        return c.is_ascii_graphic().then(|| c.to_ascii_uppercase() as i32);
+    }
+    if let Some(n) = name.strip_prefix('F').and_then(|n| n.parse::<i32>().ok()).filter(|n| (1..=35).contains(n)) {
+        return Some(0x0100_0030 + n - 1);
+    }
+    Some(match name.to_lowercase().as_str() {
+        "space" => 0x20,
+        "apostrophe" => 0x27,
+        "comma" => 0x2c,
+        "minus" => 0x2d,
+        "period" => 0x2e,
+        "slash" => 0x2f,
+        "semicolon" => 0x3b,
+        "equal" => 0x3d,
+        "bracketleft" => 0x5b,
+        "backslash" => 0x5c,
+        "bracketright" => 0x5d,
+        "grave" => 0x60,
+        "escape" => 0x0100_0000,
+        "tab" => 0x0100_0001,
+        "backspace" => 0x0100_0003,
+        "return" => 0x0100_0004,
+        "insert" => 0x0100_0006,
+        "delete" => 0x0100_0007,
+        "pause" => 0x0100_0008,
+        "print" => 0x0100_0009,
+        "home" => 0x0100_0010,
+        "end" => 0x0100_0011,
+        "left" => 0x0100_0012,
+        "up" => 0x0100_0013,
+        "right" => 0x0100_0014,
+        "down" => 0x0100_0015,
+        "prior" | "page_up" => 0x0100_0016,
+        "next" | "page_down" => 0x0100_0017,
+        _ => return None,
     })
 }

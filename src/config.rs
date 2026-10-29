@@ -6,7 +6,8 @@ use std::time::Duration;
 pub enum Mode {
     /// Virtual mouse clicks wherever the real cursor is.
     Cursor,
-    /// Hyprland plugin clicks inside the target window without focusing it.
+    /// Hyprland plugin clicks inside the target window without focusing it
+    /// (Hyprland only).
     /// (Also what an old "Gamepad" setting loads as.)
     #[default]
     #[serde(other)]
@@ -72,6 +73,9 @@ pub struct Config {
     pub hold_ms: f64,
     /// Cursor mode: only click while the target window has focus.
     pub cursor_only_in_target: bool,
+    /// Cursor mode: pull the real cursor onto `pos` in the target before
+    /// every click (KDE's stand-in for Window mode's picked spot).
+    pub cursor_lock: bool,
     /// Window mode: pause while the target's workspace isn't on any monitor.
     pub pause_when_hidden: bool,
     /// Window mode: click where the target's pointer already is (where the
@@ -81,14 +85,16 @@ pub struct Config {
     pub afk_method: AfkMethod,
     pub afk_action: AfkAction,
     pub afk_minutes: f64,
-    /// Toggle key, written into Hyprland's config by `hyprclick setup`.
+    /// Toggle key, written into Hyprland's config / KDE's global shortcuts by `hyprclick setup`.
     pub hotkey: crate::hotkey::Hotkey,
 }
 
 impl Default for Config {
     fn default() -> Self {
+        // Without the Hyprland plugin only the uinput ways work.
+        let window = crate::desktop::get().window_mode().is_ok();
         Self {
-            mode: Mode::Window,
+            mode: if window { Mode::Window } else { Mode::Cursor },
             target_class: "org.vinegarhq.Sober".into(),
             target_title: String::new(),
             pos: [0.5, 0.5],
@@ -97,10 +103,11 @@ impl Default for Config {
             hold_enabled: false,
             hold_ms: 15.0,
             cursor_only_in_target: false,
+            cursor_lock: false,
             pause_when_hidden: true,
             at_mouse: false,
             notify: true,
-            afk_method: AfkMethod::Window,
+            afk_method: if window { AfkMethod::Window } else { AfkMethod::Gamepad },
             afk_action: AfkAction::Wiggle,
             afk_minutes: 10.0,
             hotkey: crate::hotkey::Hotkey::default(),

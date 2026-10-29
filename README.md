@@ -1,6 +1,16 @@
 # hyprclick
 
-Background autoclicker for **Hyprland only**, written in Rust with an egui UI. It needs Hyprland itself (a plugin, its IPC and its config), so it won't work on other Wayland desktops (KDE, GNOME, Sway) or X11. The window takes its colors and font from the Noctalia rice (`~/.config/noctalia/rice.toml` → `palettes/<custom_palette>.json`), with the Ari palette built in as a fallback.
+Background autoclicker for **Hyprland** and **KDE Plasma**, written in Rust with an egui UI. Other desktops (GNOME, Sway, plain X11) aren't supported.
+
+| | Hyprland | KDE Plasma 6 |
+|---|---|---|
+| Window mode (click a window in the background) | yes | no, see [KDE](#kde-plasma) |
+| Cursor mode | yes | yes |
+| Anti-AFK: Window | yes | no |
+| Anti-AFK: Gamepad | yes | yes |
+| Hotkey from `hyprclick setup` / Key tab | Hyprland bind (keys + mouse buttons) | KDE global shortcut (keys only) |
+
+ The window takes its colors and font from the Noctalia rice (`~/.config/noctalia/rice.toml` → `palettes/<custom_palette>.json`), with the Ari palette built in as a fallback.
 
 ## Install
 
@@ -13,15 +23,34 @@ hyprclick setup
 
 `hyprclick setup` binds ALT+H (pick any other key in the app's Key tab), makes the window float, and starts the virtual gamepad at login. Then open it with `hyprclick` or from your app launcher.
 
-Needs:
+Needs on Hyprland:
 - Hyprland, tested on **0.56.2** (Lua config; the classic `hyprland.conf` is supported but untested). The plugin is compiled against Hyprland's internals on first launch, so other versions may not build.
 - `g++`, `pkg-config` and Hyprland's headers: run `hyprpm update` once (and again after Hyprland updates).
 - For Cursor mode and Gamepad anti-AFK: access to `/dev/uinput`, e.g. be in the `input` group with a rule like `KERNEL=="uinput", GROUP="input", MODE="0660"`.
 
+Needs on KDE: Plasma 6 (Wayland or X11), `kwriteconfig6`/`kreadconfig6` (part of KDE's base install) and the same `/dev/uinput` access. No compiler or headers.
+
+## KDE Plasma
+
+Same install. `hyprclick setup` on KDE:
+- adds a hidden `~/.local/share/applications/hyprclick-toggle.desktop` that runs `hyprclick toggle` and binds it as a global shortcut through kglobalaccel. It shows up in System Settings → Shortcuts as "hyprclick". KDE global shortcuts can't be mouse buttons. To use a side button, bind a key here, then map the button to that key in System Settings → Mouse.
+- adds a KWin window rule (`~/.config/kwinrulesrc`, group `hyprclick`) that opens the window centered.
+- starts the virtual gamepad at login through `~/.config/autostart/hyprclick-pad.desktop`.
+
+The window list, focus and cursor position come from small KWin scripts that hyprclick loads over D-Bus. Notifications go through the standard notification service.
+
+**Window mode doesn't exist on KDE.** On Hyprland it works through a compositor plugin. KWin has no plugin API, and none of the ways around that work in the background:
+- XTest from an X client (tested on KWin 6.8): KWin routes it into the compositor as real input, after a "Remote control" permission prompt, so it moves your real cursor.
+- XSendEvent: produces synthetic core X events only. Sober loads XInput2 (libXi) for X11 input, so they most likely never reach it. This wasn't tried against Sober on KDE. A native Wayland window can't be reached from outside KWin at all.
+- The RemoteDesktop portal / libei, and KWin's fake-input protocol: these drive the real seat pointer, which is what Cursor mode already does.
+- KWin scripts and effects can't send input.
+
+So on KDE use **Cursor** mode, with "Lock cursor to the picked spot" to always hit the same spot in the game (your mouse is taken over while it clicks) or "Only click while this window is focused", and **Gamepad** anti-AFK. A fresh config on KDE starts in those modes.
+
 ## Modes
 
 - **Window**: clicks a chosen spot inside a chosen window. The window doesn't need focus and your cursor stays where it is. By default it pauses while the window's workspace isn't shown on any monitor, so Roblox on one screen keeps clicking while you use the other. A small Hyprland plugin (`plugin/hyprclick.cpp`) sends pointer events straight to the window's surface, timed by a timerfd inside Hyprland. It clicks at a picked spot (always that spot; your cursor gets pulled there if it's inside the window) or "where the mouse is" (right under your cursor while it's inside, else where it last was).
-- **Cursor**: classic. A uinput virtual mouse clicks wherever the cursor is. Optionally it only clicks while the target window has focus.
+- **Cursor**: classic. A uinput virtual mouse clicks wherever the cursor is. Optionally it only clicks while the target window has focus, and/or locks the cursor to the picked spot in the target: before every click the real cursor is pulled back onto that spot, so your mouse is taken over while it runs. That's the closest thing to Window mode's picked spot on KDE.
 
 Button: left/right/middle. Speed: 0.1–1000 CPS. Hold duration is off by default (instant press + release).
 
@@ -38,7 +67,7 @@ It's locked to the exact target window and stops when that window goes away. It 
 
 ## Hotkey
 
-`hyprclick setup` writes the toggle hotkey and the small floating-window rule into `~/.config/hypr/hyprclick.lua` (or `hyprclick.conf` on the classic config). It adds one line to `hyprland.lua`/`hyprland.conf` to load it (with a backup), then reloads Hyprland. Change it from the app's Key tab by pressing the new combo (side mouse buttons work), or with `hyprclick setup 'ALT + J'`, `'CTRL + SHIFT + G'`, `'mouse:275'` (back), `'ALT + mouse:276'`.
+On KDE, see [KDE Plasma](#kde-plasma). On Hyprland, `hyprclick setup` writes the toggle hotkey and the small floating-window rule into `~/.config/hypr/hyprclick.lua` (or `hyprclick.conf` on the classic config). It adds one line to `hyprland.lua`/`hyprland.conf` to load it (with a backup), then reloads Hyprland. Change it from the app's Key tab by pressing the new combo (side mouse buttons work), or with `hyprclick setup 'ALT + J'`, `'CTRL + SHIFT + G'`, `'mouse:275'` (back), `'ALT + mouse:276'`.
 
 ## Use
 

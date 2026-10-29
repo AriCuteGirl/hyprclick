@@ -1,11 +1,20 @@
 //! `hyprclick setup`: put the toggle hotkey and the small floating window
-//! rule into Hyprland's config. Everything goes into one file hyprclick owns
+//! rule into the compositor's config.
+//!
+//! Hyprland: everything goes into one file hyprclick owns
 //! (~/.config/hypr/hyprclick.lua or .conf) plus one line that loads it, so
 //! the user's own files are only touched once, with a backup.
+//!
+//! KDE: a hidden .desktop file that runs `hyprclick toggle`, bound as a
+//! global shortcut through kglobalaccel (it shows up in System Settings →
+//! Shortcuts), a KWin window rule for the size, and an XDG autostart entry
+//! for the pad service.
 
+use crate::desktop::{self, Desktop};
 use crate::hotkey::Hotkey;
-use crate::{hypr, APP_ID};
+use crate::{hypr, kde, APP_ID};
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 const WINDOW_SIZE: (u32, u32) = (380, 640);
 
@@ -20,9 +29,17 @@ fn exe() -> String {
     path.display().to_string()
 }
 
-/// Writes the managed file, makes sure Hyprland loads it, reloads, and
-/// returns a short report (plus any warnings).
+/// Binds the hotkey (and window rule, pad autostart) and returns a short
+/// report (plus any warnings).
 pub fn apply(hotkey: &Hotkey) -> Result<String, String> {
+    match desktop::get() {
+        Desktop::Hyprland => apply_hyprland(hotkey),
+        Desktop::Kde => apply_kde(hotkey),
+    }
+}
+
+/// Writes the managed file, makes sure Hyprland loads it and reloads.
+fn apply_hyprland(hotkey: &Hotkey) -> Result<String, String> {
     let dir = hypr_dir();
     let lua = dir.join("hyprland.lua");
     let conf = dir.join("hyprland.conf");
@@ -69,6 +86,120 @@ pub fn apply(hotkey: &Hotkey) -> Result<String, String> {
         report += "\nnote: without a modifier that mouse button only toggles hyprclick now";
     }
     Ok(report)
+}
+
+const SHORTCUT_FILE: &str = "hyprclick-toggle.desktop";
+const RULE_GROUP: &str = "hyprclick";
+
+fn apply_kde(hotkey: &Hotkey) -> Result<String, String> {
+    let key = hotkey.qt_key()?;
+    let exe = exe();
+    let data = dirs::data_dir().ok_or("no data dir")?;
+    let apps = data.join("applications");
+    std::fs::create_dir_all(&apps).map_err(|e| e.to_string())?;
+    let launcher = apps.join(SHORTCUT_FILE);
+    std::fs::write(
+        &launcher,
+        format!(
+            "[Desktop Entry]\n\
+             # Managed by hyprclick: change the key in its Key tab, or run: hyprclick setup \"ALT + J\"\n\
+             Type=Application\n\
+             Name=hyprclick: Toggle autoclicker\n\
+             Icon=input-mouse\n\
+             Exec=\"{exe}\" toggle\n\
+             NoDisplay=true\n\
+             StartupNotify=false\n"
+        ),
+    )
+    .map_err(|e| e.to_string())?;
+
+    // kglobalaccel launches "_launch" of a .desktop component itself.
+    let action = vec![SHORTCUT_FILE, "_launch", "hyprclick", "Toggle autoclicker"];
+    const ACCEL: [&str; 3] = ["org.kde.kglobalaccel", "/kglobalaccel", "org.kde.KGlobalAccel"];
+    kde::call(ACCEL[0], ACCEL[1], ACCEL[2], "doRegister", &(&action,))?;
+    // 2 = SetPresent: grab the key now (else it only works after the next
+    // login), 4 = NoAutoloading: take this key, not a saved older one.
+    let keys = vec![(vec![key],)];
+    let set: Vec<(Vec<i32>,)> = kde::call(ACCEL[0], ACCEL[1], ACCEL[2], "setShortcutKeys", &(&action, keys, 6u32))?.body().deserialize().map_err(|e| e.to_string())?;
+    if !set.iter().any(|(k,)| k.first() == Some(&key)) {
+        return Err(format!("{} is already a KDE shortcut, pick another (or free it in System Settings → Shortcuts)", hotkey.label()));
+    }
+
+    let mut report = format!("{} → hyprclick toggle  (KDE global shortcut \"hyprclick: Toggle autoclicker\")", hotkey.label());
+    if let Err(e) = kde_window_rule() {
+        report += &format!("\nwindow rule skipped: {e}");
+    }
+    if let Err(e) = kde_autostart(&exe) {
+        report += &format!("\npad autostart skipped: {e}");
+    }
+    let _ = crate::afk::ensure_pad_service();
+    Ok(report)
+}
+
+/// KWin rule: open hyprclick at its size, centered. KDE windows float anyway.
+fn kde_window_rule() -> Result<(), String> {
+    let (w, h) = WINDOW_SIZE;
+    let size = format!("{w},{h}");
+    let entries = [
+        ("Description", "hyprclick (managed by hyprclick setup)"),
+        ("wmclass", APP_ID),
+        ("wmclassmatch", "1"), // exact
+        ("size", size.as_str()),
+        ("sizerule", "3"), // apply initially
+        ("placement", "5"), // centered
+        ("placementrule", "2"), // force
+    ];
+    for (key, value) in entries {
+        kwriteconfig(RULE_GROUP, key, value)?;
+    }
+    // Newer KWin keeps the rule list in "Order" (and migrates the older
+    // "rules" + "count" pair to it).
+    let order = kreadconfig("General", "Order")?;
+    let (key, current) = if order.is_empty() { ("rules", kreadconfig("General", "rules")?) } else { ("Order", order) };
+    let mut list: Vec<&str> = current.split(',').map(str::trim).filter(|r| !r.is_empty()).collect();
+    if !list.contains(&RULE_GROUP) {
+        list.push(RULE_GROUP);
+        kwriteconfig("General", key, &list.join(","))?;
+        if key == "rules" {
+            kwriteconfig("General", "count", &list.len().to_string())?;
+        }
+    }
+    kde::call("org.kde.KWin", "/KWin", "org.kde.KWin", "reconfigure", &())?;
+    Ok(())
+}
+
+fn kwriteconfig(group: &str, key: &str, value: &str) -> Result<(), String> {
+    let out = Command::new("kwriteconfig6")
+        .args(["--file", "kwinrulesrc", "--group", group, "--key", key, value])
+        .output()
+        .map_err(|e| format!("kwriteconfig6: {e}"))?;
+    if out.status.success() { Ok(()) } else { Err(String::from_utf8_lossy(&out.stderr).trim().to_string()) }
+}
+
+fn kreadconfig(group: &str, key: &str) -> Result<String, String> {
+    let out = Command::new("kreadconfig6")
+        .args(["--file", "kwinrulesrc", "--group", group, "--key", key])
+        .output()
+        .map_err(|e| format!("kreadconfig6: {e}"))?;
+    Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+}
+
+/// Start the pad service at login, before Roblox.
+fn kde_autostart(exe: &str) -> Result<(), String> {
+    let dir = dirs::config_dir().ok_or("no config dir")?.join("autostart");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    std::fs::write(
+        dir.join("hyprclick-pad.desktop"),
+        format!(
+            "[Desktop Entry]\n\
+             # Managed by hyprclick: virtual gamepad for Gamepad anti-AFK\n\
+             Type=Application\n\
+             Name=hyprclick pad\n\
+             Exec=\"{exe}\" pad\n\
+             NoDisplay=true\n"
+        ),
+    )
+    .map_err(|e| e.to_string())
 }
 
 fn lua_file(hk: &Hotkey) -> String {
