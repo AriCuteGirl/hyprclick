@@ -33,6 +33,13 @@ usage:
 
 fn main() {
     let arg = std::env::args().nth(1);
+    // Everything (plugin, window list, hotkey, anti-AFK target) goes
+    // through Hyprland; other compositors aren't supported.
+    let help = matches!(arg.as_deref(), Some("help" | "-h" | "--help"));
+    if !help && std::env::var_os("HYPRLAND_INSTANCE_SIGNATURE").is_none() {
+        eprintln!("hyprclick only works on Hyprland (HYPRLAND_INSTANCE_SIGNATURE isn't set).");
+        std::process::exit(1);
+    }
     match arg.as_deref() {
         None | Some("gui") => gui(),
         Some("toggle") => toggle(),
