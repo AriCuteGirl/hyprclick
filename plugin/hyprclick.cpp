@@ -47,7 +47,7 @@
 inline HANDLE PHANDLE = nullptr;
 
 // Bump on any behaviour change: the app reloads a plugin whose version differs.
-constexpr int HYPRCLICK_VERSION = 7;
+constexpr int HYPRCLICK_VERSION = 8;
 
 namespace {
     struct SClicker {
@@ -479,7 +479,9 @@ namespace {
         }
         if (sub == "status") {
             const auto& C = g_clicker;
-            return std::format("running={} paused={} clicks={} error={}", C.running ? 1 : 0, C.paused ? 1 : 0, C.clicks, C.lastError.empty() ? "-" : C.lastError);
+            const auto MOUSE = C.lastMouse ? std::format("{:.0f},{:.0f}", C.lastMouse->x, C.lastMouse->y) : std::string{"-"};
+            return std::format("running={} paused={} clicks={} mouse={} error={}", C.running ? 1 : 0, C.paused ? 1 : 0, C.clicks, MOUSE,
+                               C.lastError.empty() ? "-" : C.lastError);
         }
         return "error: unknown subcommand";
     }
