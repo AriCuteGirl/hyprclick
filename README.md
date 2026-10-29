@@ -4,7 +4,7 @@ Background autoclicker for Hyprland, written in Rust with an egui UI. The window
 
 ## Modes
 
-- **Window**: clicks a chosen spot inside a chosen window. The window doesn't need focus and your cursor stays where it is. By default it pauses while the window's workspace isn't shown on any monitor, so Roblox on one screen keeps clicking while you use the other. A small Hyprland plugin (`plugin/hyprclick.cpp`) sends pointer events straight to the window's surface, timed by a timerfd inside Hyprland. It clicks at a picked spot or "where the mouse is", and always right under your cursor while your cursor is inside the window.
+- **Window**: clicks a chosen spot inside a chosen window. The window doesn't need focus and your cursor stays where it is. By default it pauses while the window's workspace isn't shown on any monitor, so Roblox on one screen keeps clicking while you use the other. A small Hyprland plugin (`plugin/hyprclick.cpp`) sends pointer events straight to the window's surface, timed by a timerfd inside Hyprland. It clicks at a picked spot (always that spot; your cursor gets pulled there if it's inside the window) or "where the mouse is" (right under your cursor while it's inside, else where it last was).
 - **Cursor**: classic. A uinput virtual mouse clicks wherever the cursor is. Optionally it only clicks while the target window has focus.
 
 Button: left/right/middle. Speed: 0.1–1000 CPS. Hold duration is off by default (instant press + release).

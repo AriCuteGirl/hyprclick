@@ -48,7 +48,7 @@
 inline HANDLE PHANDLE = nullptr;
 
 // Bump on any behaviour change: the app reloads a plugin whose version differs.
-constexpr int HYPRCLICK_VERSION = 12;
+constexpr int HYPRCLICK_VERSION = 13;
 
 namespace {
     struct SClicker {
@@ -367,13 +367,16 @@ namespace {
         if (!C.running || !WINDOW || !WINDOW->m_isMapped)
             return;
 
-        // The user's real cursor is inside the target: click right under it.
-        // Moving the target's pointer elsewhere would drag the cursor along
-        // (games like Roblox re-center it). Otherwise use the mouse's last
-        // spot in there (at_mouse; until seen, the given spot) or the spot.
-        Vector2D pos = C.atMouse && C.lastMouse ? *C.lastMouse : C.pos;
-        if (WINDOW->wlSurface() && g_pSeatManager->m_state.pointerFocus.lock() == WINDOW->wlSurface()->resource())
-            pos = toLocal(WINDOW, g_pInputManager->getMouseCoordsInternal());
+        // Picked spot: always the spot (the cursor follows it if it's inside).
+        // at_mouse: right under the real cursor while it's inside the target,
+        // else where it last was in there (until seen, the given spot).
+        Vector2D pos = C.pos;
+        if (C.atMouse) {
+            if (C.lastMouse)
+                pos = *C.lastMouse;
+            if (WINDOW->wlSurface() && g_pSeatManager->m_state.pointerFocus.lock() == WINDOW->wlSurface()->resource())
+                pos = toLocal(WINDOW, g_pInputManager->getMouseCoordsInternal());
+        }
         C.clickPos = pos;
 
         activateX11(WINDOW);
