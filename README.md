@@ -2,6 +2,22 @@
 
 Background autoclicker for Hyprland, written in Rust with an egui UI. The window takes its colors and font from the Noctalia rice (`~/.config/noctalia/rice.toml` → `palettes/<custom_palette>.json`), with the Ari palette built in as a fallback.
 
+## Install
+
+```bash
+mkdir -p ~/.local/bin
+curl -L -o ~/.local/bin/hyprclick https://github.com/AriCuteGirl/hyprclick/releases/latest/download/hyprclick-x86_64-linux
+chmod +x ~/.local/bin/hyprclick
+hyprclick setup
+```
+
+`hyprclick setup` binds ALT+H (pick any other key in the app's Key tab), makes the window float, and starts the virtual gamepad at login. Then open it with `hyprclick` or from your app launcher.
+
+Needs:
+- Hyprland, tested on **0.56.2** (Lua config; the classic `hyprland.conf` is supported but untested). The plugin is compiled against Hyprland's internals on first launch, so other versions may not build.
+- `g++`, `pkg-config` and Hyprland's headers: run `hyprpm update` once (and again after Hyprland updates).
+- For Cursor mode and Gamepad anti-AFK: access to `/dev/uinput`, e.g. be in the `input` group with a rule like `KERNEL=="uinput", GROUP="input", MODE="0660"`.
+
 ## Modes
 
 - **Window**: clicks a chosen spot inside a chosen window. The window doesn't need focus and your cursor stays where it is. By default it pauses while the window's workspace isn't shown on any monitor, so Roblox on one screen keeps clicking while you use the other. A small Hyprland plugin (`plugin/hyprclick.cpp`) sends pointer events straight to the window's surface, timed by a timerfd inside Hyprland. It clicks at a picked spot (always that spot; your cursor gets pulled there if it's inside the window) or "where the mouse is" (right under your cursor while it's inside, else where it last was).
