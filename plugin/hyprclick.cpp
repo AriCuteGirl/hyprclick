@@ -47,12 +47,13 @@
 inline HANDLE PHANDLE = nullptr;
 
 // Bump on any behaviour change: the app reloads a plugin whose version differs.
-constexpr int HYPRCLICK_VERSION = 8;
+constexpr int HYPRCLICK_VERSION = 9;
 
 namespace {
     struct SClicker {
         PHLWINDOWREF       window;
         Vector2D           pos;
+        Vector2D           clickPos; // where the current press went (release goes there too)
         uint32_t           button     = 272;
         uint64_t           intervalNs = 100'000'000;
         uint64_t           holdNs     = 0;
@@ -276,7 +277,7 @@ namespace {
         auto& C = g_clicker;
         if (!C.pressed)
             return;
-        sendButtons(C.window.lock(), C.pos, C.button, {WL_POINTER_BUTTON_STATE_RELEASED});
+        sendButtons(C.window.lock(), C.clickPos, C.button, {WL_POINTER_BUTTON_STATE_RELEASED});
         C.pressed = false;
     }
 
@@ -355,17 +356,22 @@ namespace {
         if (!C.running || !WINDOW || !WINDOW->m_isMapped)
             return;
 
-        // Never seen the user's mouse in there yet: fall back to the given spot.
-        if (C.atMouse && C.lastMouse)
-            C.pos = *C.lastMouse;
+        // The user's real cursor is inside the target: click right under it.
+        // Moving the target's pointer elsewhere would drag the cursor along
+        // (games like Roblox re-center it). Otherwise use the mouse's last
+        // spot in there (at_mouse; until seen, the given spot) or the spot.
+        Vector2D pos = C.atMouse && C.lastMouse ? *C.lastMouse : C.pos;
+        if (WINDOW->wlSurface() && g_pSeatManager->m_state.pointerFocus.lock() == WINDOW->wlSurface()->resource())
+            pos = toLocal(WINDOW, g_pInputManager->getMouseCoordsInternal());
+        C.clickPos = pos;
 
         activateX11(WINDOW);
 
         if (C.holdNs == 0) {
-            if (!sendButtons(WINDOW, C.pos, C.button, {WL_POINTER_BUTTON_STATE_PRESSED, WL_POINTER_BUTTON_STATE_RELEASED}))
+            if (!sendButtons(WINDOW, C.clickPos, C.button, {WL_POINTER_BUTTON_STATE_PRESSED, WL_POINTER_BUTTON_STATE_RELEASED}))
                 return;
         } else {
-            if (!sendButtons(WINDOW, C.pos, C.button, {WL_POINTER_BUTTON_STATE_PRESSED}, true))
+            if (!sendButtons(WINDOW, C.clickPos, C.button, {WL_POINTER_BUTTON_STATE_PRESSED}, true))
                 return;
             C.pressed = true;
             armTimer(C.holdFd, C.holdNs, 0);
