@@ -7,7 +7,7 @@
 //
 // Control (hyprctl socket, one request per line):
 //   hyprclick ping                     -> "hyprclick ok <version> <path of this .so>"
-//   hyprclick start <selector> <x> <y> <button> <interval_ns> <hold_ns>
+//   hyprclick start <selector> <x> <y> <button> <interval_ns> <hold_ns> [only_visible]
 //   hyprclick click <selector> <x> <y> <button>
 //   hyprclick stop
 //   hyprclick status
@@ -35,7 +35,7 @@
 inline HANDLE PHANDLE = nullptr;
 
 // Bump on any behaviour change: the app reloads a plugin whose version differs.
-constexpr int HYPRCLICK_VERSION = 3;
+constexpr int HYPRCLICK_VERSION = 4;
 
 namespace {
     struct SClicker {
@@ -47,6 +47,8 @@ namespace {
         bool               running    = false;
         bool               pressed    = false;
         bool               restorePending = false;
+        bool               onlyVisible = false; // pause while the target's workspace isn't shown
+        bool               paused      = false;
         uint64_t           clicks     = 0;
         std::string        lastError;
         Time::steady_tp    raisedAt;
@@ -236,6 +238,10 @@ namespace {
         // A hold longer than the interval would swallow the next press.
         release();
 
+        C.paused = C.onlyVisible && !(WINDOW->m_workspace && WINDOW->m_workspace->isVisible());
+        if (C.paused)
+            return 0;
+
         if (raiseX11(WINDOW))
             armTimer(C.fireFd, X11_RAISE_SETTLE_NS, 0);
         else
@@ -248,8 +254,10 @@ namespace {
         double      x = 0, y = 0;
         uint32_t    button = 272;
         uint64_t    intervalNs = 0, holdNs = 0;
+        uint32_t    onlyVisible = 0;
         if (!(args >> selector >> x >> y >> button >> intervalNs >> holdNs))
-            return "error: usage: hyprclick start <selector> <x> <y> <button> <interval_ns> <hold_ns>";
+            return "error: usage: hyprclick start <selector> <x> <y> <button> <interval_ns> <hold_ns> [only_visible]";
+        args >> onlyVisible;
         if (button < 272 || button > 279)
             return "error: button must be 272..279";
         if (intervalNs < 100'000)
@@ -266,8 +274,10 @@ namespace {
         C.button     = button;
         C.intervalNs = intervalNs;
         C.holdNs     = std::min(holdNs, intervalNs * 9 / 10);
-        C.clicks     = 0;
-        C.running    = true;
+        C.clicks      = 0;
+        C.onlyVisible = onlyVisible != 0;
+        C.paused      = false;
+        C.running     = true;
         C.lastError.clear();
         // First click fires right away, then on a fixed, drift-free period.
         armTimer(C.tickFd, 1, intervalNs);
@@ -309,7 +319,7 @@ namespace {
         }
         if (sub == "status") {
             const auto& C = g_clicker;
-            return std::format("running={} clicks={} error={}", C.running ? 1 : 0, C.clicks, C.lastError.empty() ? "-" : C.lastError);
+            return std::format("running={} paused={} clicks={} error={}", C.running ? 1 : 0, C.paused ? 1 : 0, C.clicks, C.lastError.empty() ? "-" : C.lastError);
         }
         return "error: unknown subcommand";
     }

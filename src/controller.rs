@@ -10,12 +10,14 @@ pub struct Controller {
     pub desc: String,
     pub error: Option<String>,
     pub clicks: u64,
+    /// Running but holding off because the target isn't on screen.
+    pub paused: bool,
     pub started: Option<Instant>,
 }
 
 impl Controller {
     pub fn new(cfg: Config) -> Self {
-        Self { cfg, engine: Engine::default(), desc: String::new(), error: None, clicks: 0, started: None }
+        Self { cfg, engine: Engine::default(), desc: String::new(), error: None, clicks: 0, paused: false, started: None }
     }
 
     pub fn running(&self) -> bool {
@@ -64,8 +66,9 @@ impl Controller {
         if !self.running() {
             return;
         }
-        let (clicks, ended) = self.engine.poll();
+        let (clicks, paused, ended) = self.engine.poll();
         self.clicks = clicks;
+        self.paused = paused;
         if let Some(reason) = ended {
             self.started = None;
             self.error = Some(reason);
@@ -74,7 +77,8 @@ impl Controller {
 
     pub fn status_line(&self) -> String {
         if self.running() {
-            format!("running {} clicks · {}", self.clicks, self.desc)
+            let state = if self.paused { "paused (target off screen)" } else { "running" };
+            format!("{state} {} clicks · {}", self.clicks, self.desc)
         } else {
             format!("idle · mode {:?}", self.cfg.mode)
         }

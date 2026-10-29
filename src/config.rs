@@ -96,6 +96,8 @@ pub struct Config {
     pub hold_ms: f64,
     /// Cursor mode: only click while the target window has focus.
     pub cursor_only_in_target: bool,
+    /// Window mode: pause while the target's workspace isn't on any monitor.
+    pub pause_when_hidden: bool,
     pub notify: bool,
 }
 
@@ -112,6 +114,7 @@ impl Default for Config {
             hold_enabled: false,
             hold_ms: 15.0,
             cursor_only_in_target: false,
+            pause_when_hidden: true,
             notify: true,
         }
     }

@@ -210,9 +210,15 @@ impl App {
                 ui.add_space(8.0);
                 ui.vertical(|ui| {
                     ui.add_space(6.0);
-                    let (state, col) = if running { ("CLICKING", ACCENT) } else { ("IDLE", WEAK) };
+                    let (state, col) = match (running, c.paused) {
+                        (true, true) => ("PAUSED", ACCENT2),
+                        (true, false) => ("CLICKING", ACCENT),
+                        _ => ("IDLE", WEAK),
+                    };
                     ui.label(RichText::new(state).font(FontId::new(26.0, bold())).color(col));
-                    let sub = if running {
+                    let sub = if running && c.paused {
+                        "target isn't on screen, resumes when it is".into()
+                    } else if running {
                         c.desc.clone()
                     } else {
                         "ALT+H or the button to start".into()
@@ -301,6 +307,11 @@ impl App {
                 });
                 return;
             }
+
+            ui.horizontal(|ui| {
+                toggle_switch(ui, &mut c.cfg.pause_when_hidden);
+                ui.label(RichText::new("Pause when target isn't on screen").color(TEXT));
+            });
 
             ui.add_space(2.0);
             position_pad(ui, &mut c.cfg.pos, target.as_ref().map(|t| t.size), self.pick_until.is_some());

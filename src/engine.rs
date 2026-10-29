@@ -58,21 +58,22 @@ impl Engine {
         }
     }
 
-    /// Click count so far. Also notices when the plugin stopped on its own
-    /// (target window closed) and returns that reason.
-    pub fn poll(&mut self) -> (u64, Option<String>) {
+    /// Click count, whether clicking is paused (target off screen), and the
+    /// reason if the plugin stopped on its own (target window closed).
+    pub fn poll(&mut self) -> (u64, bool, Option<String>) {
         if let Some(Running::Plugin) = self.running {
             let status = hypr::request("hyprclick status").unwrap_or_default();
             let field = |k: &str| status.split(' ').find_map(|f| f.strip_prefix(k)).unwrap_or("").to_string();
             let clicks = field("clicks=").parse().unwrap_or(0);
+            let paused = field("paused=") == "1";
             if field("running=") == "0" {
                 self.running = None;
                 let err = status.split_once("error=").map(|(_, e)| e.trim().to_string()).filter(|e| e != "-");
-                return (clicks, Some(err.unwrap_or_else(|| "stopped".into())));
+                return (clicks, false, Some(err.unwrap_or_else(|| "stopped".into())));
             }
-            return (clicks, None);
+            return (clicks, paused, None);
         }
-        (self.clicks.load(Ordering::Relaxed), None)
+        (self.clicks.load(Ordering::Relaxed), false, None)
     }
 
     fn start_plugin(&mut self, cfg: &Config) -> Result<String, String> {
@@ -82,11 +83,12 @@ impl Engine {
         let x = (cfg.pos[0] as f64 * target.size[0]).round();
         let y = (cfg.pos[1] as f64 * target.size[1]).round();
         let reply = hypr::request(&format!(
-            "hyprclick start address:{} {x} {y} {} {} {}",
+            "hyprclick start address:{} {x} {y} {} {} {} {}",
             target.address,
             cfg.button.code(),
             cfg.interval().as_nanos(),
-            cfg.hold().as_nanos()
+            cfg.hold().as_nanos(),
+            cfg.pause_when_hidden as u8
         ))?;
         if reply.trim() != "ok" {
             return Err(reply.trim().to_string());
