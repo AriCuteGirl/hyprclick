@@ -3,6 +3,7 @@ mod controller;
 mod engine;
 mod hypr;
 mod ipc;
+mod theme;
 mod ui;
 
 use config::Config;

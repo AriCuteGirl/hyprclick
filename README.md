@@ -1,6 +1,6 @@
 # hyprclick
 
-Background autoclicker for Hyprland, written in Rust with an egui UI.
+Background autoclicker for Hyprland, written in Rust with an egui UI. The window takes its colors and font from the Noctalia rice (`~/.config/noctalia/rice.toml` → `palettes/<custom_palette>.json`), with the Ari palette built in as a fallback.
 
 ## Modes
 

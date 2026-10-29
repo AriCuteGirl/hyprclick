@@ -1,6 +1,6 @@
 use crate::config::{Config, Mode, MouseButton, PadButton, MAX_CPS};
 use crate::controller::{fmt_cps, Controller};
-use crate::{hypr, ipc, APP_ID};
+use crate::{hypr, ipc, theme, APP_ID};
 use eframe::egui::{
     self, pos2, vec2, Align, Align2, Color32, CornerRadius, FontData, FontDefinitions, FontFamily,
     FontId, Layout, Margin, Rect, RichText, Sense, Stroke, StrokeKind, Ui,
@@ -8,17 +8,10 @@ use eframe::egui::{
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-const BG: Color32 = Color32::from_rgb(9, 12, 20);
-const DEEP: Color32 = Color32::from_rgb(6, 8, 14);
-const CARD: Color32 = Color32::from_rgb(16, 21, 33);
-const CARD_HI: Color32 = Color32::from_rgb(26, 33, 50);
-const LINE: Color32 = Color32::from_rgb(36, 46, 68);
-const ACCENT: Color32 = Color32::from_rgb(90, 209, 255);
-const ACCENT2: Color32 = Color32::from_rgb(167, 139, 250);
-const TEXT: Color32 = Color32::from_rgb(230, 237, 247);
-const WEAK: Color32 = Color32::from_rgb(132, 148, 176);
-const GOOD: Color32 = Color32::from_rgb(74, 222, 128);
-const BAD: Color32 = Color32::from_rgb(255, 92, 122);
+/// Colors and font come from the user's Noctalia rice (see theme.rs).
+fn pal() -> &'static theme::Theme {
+    theme::get()
+}
 
 // Nerd Font glyphs.
 const I_POWER: &str = "\u{f011}";
@@ -27,7 +20,7 @@ const I_CURSOR: &str = "\u{f245}";
 const I_PAD: &str = "\u{f11b}";
 const I_REFRESH: &str = "\u{f021}";
 const I_TARGET: &str = "\u{f05b}";
-const I_SNOW: &str = "\u{f2dc}";
+const I_HEART: &str = "\u{f004}";
 
 const PICK_SECS: f32 = 3.0;
 
@@ -58,7 +51,8 @@ pub fn run() {
             .with_app_id(APP_ID)
             .with_title("hyprclick")
             .with_inner_size([460.0, 820.0])
-            .with_min_inner_size([400.0, 560.0]),
+            .with_min_inner_size([400.0, 560.0])
+            .with_transparent(true),
         ..Default::default()
     };
     let _ = eframe::run_native(
@@ -159,13 +153,17 @@ impl App {
 }
 
 impl eframe::App for App {
+    fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
+        [0.0; 4]
+    }
+
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
         let ctrl = self.ctrl.clone();
         let mut c = ctrl.lock().unwrap();
         self.tick(ui.ctx(), &mut c);
 
         egui::CentralPanel::default()
-            .frame(egui::Frame::new().fill(BG).inner_margin(Margin::symmetric(18, 16)))
+            .frame(egui::Frame::new().fill(pal().bg).inner_margin(Margin::symmetric(18, 16)))
             .show(ui, |ui| {
                 egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
                     ui.spacing_mut().item_spacing = vec2(10.0, 12.0);
@@ -187,13 +185,13 @@ impl eframe::App for App {
 impl App {
     fn header(&mut self, ui: &mut Ui) {
         ui.horizontal(|ui| {
-            ui.label(RichText::new(I_SNOW).font(FontId::new(22.0, icons())).color(ACCENT));
-            ui.label(RichText::new("hyprclick").font(FontId::new(24.0, bold())).color(TEXT));
+            ui.label(RichText::new(I_HEART).font(FontId::new(22.0, icons())).color(pal().accent));
+            ui.label(RichText::new("hyprclick").font(FontId::new(24.0, bold())).color(pal().text));
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 let (txt, col) = match &*self.plugin.lock().unwrap() {
-                    PluginState::Checking => ("plugin …".to_string(), WEAK),
-                    PluginState::Ready => ("plugin ready".to_string(), GOOD),
-                    PluginState::Failed(_) => ("plugin off".to_string(), BAD),
+                    PluginState::Checking => ("plugin …".to_string(), pal().weak),
+                    PluginState::Ready => ("plugin ready".to_string(), pal().good),
+                    PluginState::Failed(_) => ("plugin off".to_string(), pal().bad),
                 };
                 pill(ui, &txt, col);
             });
@@ -202,7 +200,7 @@ impl App {
 
     fn hero(&mut self, ui: &mut Ui, c: &mut Controller) {
         let running = c.running();
-        card(ui, None, |ui| {
+        card_with(ui, None, Stroke::new(2.0, pal().accent), |ui| {
             ui.horizontal(|ui| {
                 if power_button(ui, running).clicked() {
                     c.toggle();
@@ -211,9 +209,9 @@ impl App {
                 ui.vertical(|ui| {
                     ui.add_space(6.0);
                     let (state, col) = match (running, c.paused) {
-                        (true, true) => ("PAUSED", ACCENT2),
-                        (true, false) => ("CLICKING", ACCENT),
-                        _ => ("IDLE", WEAK),
+                        (true, true) => ("PAUSED", pal().accent2),
+                        (true, false) => ("CLICKING", pal().accent),
+                        _ => ("IDLE", pal().weak),
                     };
                     ui.label(RichText::new(state).font(FontId::new(26.0, bold())).color(col));
                     let sub = if running && c.paused {
@@ -223,7 +221,7 @@ impl App {
                     } else {
                         "ALT+H or the button to start".into()
                     };
-                    ui.label(RichText::new(sub).color(WEAK).size(13.0));
+                    ui.label(RichText::new(sub).color(pal().weak).size(13.0));
                     ui.add_space(4.0);
                     ui.horizontal(|ui| {
                         stat(ui, "clicks", &c.clicks.to_string());
@@ -235,7 +233,7 @@ impl App {
             });
         });
         if let Some(err) = &c.error {
-            ui.label(RichText::new(format!("⚠ {err}")).color(BAD).size(13.0));
+            ui.label(RichText::new(format!("⚠ {err}")).color(pal().bad).size(13.0));
         }
     }
 
@@ -252,11 +250,11 @@ impl App {
                 ],
             );
             let hint = match c.cfg.mode {
-                Mode::Window => "Clicks a spot inside the chosen window. It doesn't need focus, your mouse stays free, and it works on other workspaces too.",
+                Mode::Window => "Clicks inside the chosen window without you focusing it. Your mouse stays free, and it keeps clicking while you use your other screen.",
                 Mode::Cursor => "Classic: clicks wherever your cursor is.",
                 Mode::Gamepad => "Virtual Xbox pad, the roblox-caffeine trick. Games read it in the background. In Roblox, RT uses the tool.",
             };
-            ui.label(RichText::new(hint).color(WEAK).size(12.5));
+            ui.label(RichText::new(hint).color(pal().weak).size(12.5));
         });
     }
 
@@ -267,7 +265,7 @@ impl App {
                 let w = ui.available_width() - 44.0;
                 let shown = if c.cfg.target_class.is_empty() { "choose a window".into() } else { c.cfg.target_class.clone() };
                 egui::ComboBox::from_id_salt("target")
-                    .selected_text(RichText::new(shown).color(TEXT))
+                    .selected_text(RichText::new(shown).color(pal().text))
                     .width(w)
                     .height(320.0)
                     .show_ui(ui, |ui| {
@@ -291,26 +289,26 @@ impl App {
                     let kind = if t.xwayland { "XWayland" } else { "Wayland" };
                     ui.label(
                         RichText::new(format!("●  open · {}×{} · {kind} · ws {}", t.size[0], t.size[1], t.workspace_id))
-                            .color(GOOD)
+                            .color(pal().good)
                             .size(12.5),
                     );
                 }
                 None => {
-                    ui.label(RichText::new("○  not open right now").color(WEAK).size(12.5));
+                    ui.label(RichText::new("○  not open right now").color(pal().weak).size(12.5));
                 }
             }
 
             if c.cfg.mode == Mode::Cursor {
                 ui.horizontal(|ui| {
                     toggle_switch(ui, &mut c.cfg.cursor_only_in_target);
-                    ui.label(RichText::new("Only click while this window is focused").color(TEXT));
+                    ui.label(RichText::new("Only click while this window is focused").color(pal().text));
                 });
                 return;
             }
 
             ui.horizontal(|ui| {
                 toggle_switch(ui, &mut c.cfg.pause_when_hidden);
-                ui.label(RichText::new("Pause when target isn't on screen").color(TEXT));
+                ui.label(RichText::new("Pause when target isn't on screen").color(pal().text));
             });
 
             ui.add_space(2.0);
@@ -319,7 +317,7 @@ impl App {
             if c.cfg.at_mouse {
                 ui.label(
                     RichText::new("Doesn't move the game's pointer. Clicks wherever your mouse last was inside the window (until then, the picked spot).")
-                        .color(WEAK)
+                        .color(pal().weak)
                         .size(12.5),
                 );
                 return;
@@ -330,7 +328,7 @@ impl App {
             ui.horizontal(|ui| {
                 let size = target.as_ref().map(|t| t.size).unwrap_or([0.0, 0.0]);
                 for (i, axis) in ["X", "Y"].iter().enumerate() {
-                    ui.label(RichText::new(*axis).color(WEAK));
+                    ui.label(RichText::new(*axis).color(pal().weak));
                     if size[i] > 0.0 {
                         let mut px = (c.cfg.pos[i] as f64 * size[i]).round();
                         if ui.add(egui::DragValue::new(&mut px).range(0.0..=size[i] - 1.0).speed(1.0).suffix(" px")).changed() {
@@ -359,7 +357,7 @@ impl App {
             if let (Some(_), Some((w, x, y))) = (self.pick_until, &self.pick_preview) {
                 ui.label(
                     RichText::new(format!("{} @ {:.0}, {:.0}", w.class, x - w.at[0], y - w.at[1]))
-                        .color(ACCENT)
+                        .color(pal().accent)
                         .size(12.5),
                 );
             }
@@ -388,10 +386,10 @@ impl App {
                         .max_decimals(1)
                         .custom_formatter(|v, _| fmt_cps(v)),
                 );
-                ui.label(RichText::new("CPS").font(FontId::new(15.0, bold())).color(ACCENT));
+                ui.label(RichText::new("CPS").font(FontId::new(15.0, bold())).color(pal().accent));
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     let ms = 1000.0 / c.cfg.cps.max(0.1);
-                    ui.label(RichText::new(format!("every {ms:.2} ms")).color(WEAK).size(12.5));
+                    ui.label(RichText::new(format!("every {ms:.2} ms")).color(pal().weak).size(12.5));
                 });
             });
             ui.spacing_mut().slider_width = ui.available_width();
@@ -408,7 +406,7 @@ impl App {
             ui.separator();
             ui.horizontal(|ui| {
                 toggle_switch(ui, &mut c.cfg.hold_enabled);
-                ui.label(RichText::new("Hold duration").color(TEXT));
+                ui.label(RichText::new("Hold duration").color(pal().text));
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     if c.cfg.hold_enabled {
                         ui.add(egui::DragValue::new(&mut c.cfg.hold_ms).range(0.0..=1000.0).speed(0.5).suffix(" ms"));
@@ -419,10 +417,10 @@ impl App {
                 ui.add(egui::Slider::new(&mut c.cfg.hold_ms, 0.0..=250.0).show_value(false));
                 let capped = c.cfg.hold().as_secs_f64() * 1000.0;
                 if capped + 0.01 < c.cfg.hold_ms {
-                    ui.label(RichText::new(format!("capped to {capped:.1} ms at this CPS")).color(ACCENT2).size(12.0));
+                    ui.label(RichText::new(format!("capped to {capped:.1} ms at this CPS")).color(pal().accent2).size(12.0));
                 }
             } else {
-                ui.label(RichText::new("0 ms: press and release go out together, no delay").color(WEAK).size(12.5));
+                ui.label(RichText::new("0 ms: press and release go out together, no delay").color(pal().weak).size(12.5));
             }
         });
     }
@@ -430,12 +428,12 @@ impl App {
     fn footer(&mut self, ui: &mut Ui, c: &mut Controller) {
         ui.horizontal(|ui| {
             toggle_switch(ui, &mut c.cfg.notify);
-            ui.label(RichText::new("Notifications").color(TEXT));
+            ui.label(RichText::new("Notifications").color(pal().text));
         });
         if let PluginState::Failed(e) = &*self.plugin.lock().unwrap() {
-            ui.label(RichText::new(format!("Window mode unavailable: {e}")).color(BAD).size(12.0));
+            ui.label(RichText::new(format!("Window mode unavailable: {e}")).color(pal().bad).size(12.0));
         }
-        ui.label(RichText::new("ALT+H toggles from anywhere  ·  hyprclick toggle").color(WEAK).size(11.5));
+        ui.label(RichText::new("ALT+H toggles from anywhere  ·  hyprclick toggle").color(pal().weak).size(11.5));
     }
 }
 
@@ -450,15 +448,19 @@ fn icons() -> FontFamily {
 }
 
 fn card(ui: &mut Ui, title: Option<&str>, add: impl FnOnce(&mut Ui)) {
+    card_with(ui, title, Stroke::new(1.0, pal().line), add);
+}
+
+fn card_with(ui: &mut Ui, title: Option<&str>, stroke: Stroke, add: impl FnOnce(&mut Ui)) {
     egui::Frame::new()
-        .fill(CARD)
-        .stroke(Stroke::new(1.0, LINE))
-        .corner_radius(CornerRadius::same(16))
+        .fill(pal().card.gamma_multiply(0.92))
+        .stroke(stroke)
+        .corner_radius(CornerRadius::same(8))
         .inner_margin(Margin::same(16))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
             if let Some(t) = title {
-                ui.label(RichText::new(t).font(FontId::new(11.5, bold())).color(WEAK).extra_letter_spacing(1.6));
+                ui.label(RichText::new(t).font(FontId::new(11.5, bold())).color(pal().weak).extra_letter_spacing(1.6));
             }
             add(ui);
         });
@@ -468,7 +470,7 @@ fn pill(ui: &mut Ui, text: &str, color: Color32) {
     egui::Frame::new()
         .fill(color.gamma_multiply(0.12))
         .stroke(Stroke::new(1.0, color.gamma_multiply(0.5)))
-        .corner_radius(CornerRadius::same(20))
+        .corner_radius(CornerRadius::same(4))
         .inner_margin(Margin::symmetric(10, 3))
         .show(ui, |ui| {
             ui.label(RichText::new(format!("● {text}")).color(color).size(12.0));
@@ -477,14 +479,14 @@ fn pill(ui: &mut Ui, text: &str, color: Color32) {
 
 fn stat(ui: &mut Ui, label: &str, value: &str) {
     egui::Frame::new()
-        .fill(DEEP)
-        .corner_radius(CornerRadius::same(10))
+        .fill(pal().deep)
+        .corner_radius(CornerRadius::same(4))
         .inner_margin(Margin::symmetric(10, 5))
         .show(ui, |ui| {
             ui.vertical(|ui| {
                 ui.spacing_mut().item_spacing.y = 0.0;
-                ui.label(RichText::new(value).font(FontId::monospace(15.0)).color(TEXT));
-                ui.label(RichText::new(label).color(WEAK).size(10.5));
+                ui.label(RichText::new(value).font(FontId::monospace(15.0)).color(pal().text));
+                ui.label(RichText::new(label).color(pal().weak).size(10.5));
             });
         });
 }
@@ -505,19 +507,19 @@ fn power_button(ui: &mut Ui, running: bool) -> egui::Response {
     // Soft glow, stronger when running.
     for i in 0..10 {
         let a = (0.10 - i as f32 * 0.01).max(0.0) * (0.35 + on * 0.65);
-        p.circle_filled(center, r + 4.0 + i as f32 * 1.6, ACCENT.gamma_multiply(a));
+        p.circle_filled(center, r + 4.0 + i as f32 * 1.6, pal().accent.gamma_multiply(a));
     }
     if running {
         for k in 0..2 {
             let phase = (t * 0.9 + k as f32 * 0.5).fract();
-            p.circle_stroke(center, r + 2.0 + phase * 16.0, Stroke::new(2.0, ACCENT.gamma_multiply((1.0 - phase) * 0.7)));
+            p.circle_stroke(center, r + 2.0 + phase * 16.0, Stroke::new(2.0, pal().accent.gamma_multiply((1.0 - phase) * 0.7)));
         }
     }
     let hover = if resp.hovered() { 0.12 } else { 0.0 };
-    let fill = lerp_color(CARD_HI, ACCENT, on);
+    let fill = lerp_color(pal().card_hi, pal().accent, on);
     p.circle_filled(center, r, lerp_color(fill, Color32::WHITE, hover));
-    p.circle_stroke(center, r, Stroke::new(2.0, lerp_color(ACCENT.gamma_multiply(0.6), Color32::WHITE, on * 0.6)));
-    p.text(center, Align2::CENTER_CENTER, I_POWER, FontId::new(34.0, icons()), lerp_color(ACCENT, DEEP, on));
+    p.circle_stroke(center, r, Stroke::new(2.0, lerp_color(pal().accent.gamma_multiply(0.6), Color32::WHITE, on * 0.6)));
+    p.text(center, Align2::CENTER_CENTER, I_POWER, FontId::new(34.0, icons()), lerp_color(pal().accent, pal().on_accent, on));
     resp.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
@@ -525,7 +527,7 @@ fn segmented<T: PartialEq + Copy>(ui: &mut Ui, salt: &str, value: &mut T, items:
     let h = 38.0;
     let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), h), Sense::hover());
     let p = ui.painter().clone();
-    p.rect_filled(rect, CornerRadius::same(12), DEEP);
+    p.rect_filled(rect, CornerRadius::same(6), pal().deep);
     let pad = 4.0;
     let w = (rect.width() - pad * 2.0) / items.len() as f32;
     let mut changed = false;
@@ -535,12 +537,12 @@ fn segmented<T: PartialEq + Copy>(ui: &mut Ui, salt: &str, value: &mut T, items:
         let selected = *v == *value;
         let anim = ui.ctx().animate_bool_with_time(resp.id, selected, 0.15);
         if anim > 0.0 {
-            p.rect_filled(r, CornerRadius::same(9), ACCENT.gamma_multiply(anim));
+            p.rect_filled(r, CornerRadius::same(4), pal().accent.gamma_multiply(anim));
         } else if resp.hovered() {
-            p.rect_filled(r, CornerRadius::same(9), CARD_HI);
+            p.rect_filled(r, CornerRadius::same(4), pal().card_hi);
         }
         let font = FontId::new(13.5, if selected { bold() } else { FontFamily::Proportional });
-        p.text(r.center(), Align2::CENTER_CENTER, label, font, lerp_color(TEXT, DEEP, anim));
+        p.text(r.center(), Align2::CENTER_CENTER, label, font, lerp_color(pal().text, pal().on_accent, anim));
         if resp.clicked() && !selected {
             *value = *v;
             changed = true;
@@ -557,20 +559,20 @@ fn toggle_switch(ui: &mut Ui, on: &mut bool) -> egui::Response {
     }
     let t = ui.ctx().animate_bool_with_time(resp.id, *on, 0.15);
     let p = ui.painter();
-    p.rect_filled(rect, CornerRadius::same(12), lerp_color(CARD_HI, ACCENT, t));
-    p.rect_stroke(rect, CornerRadius::same(12), Stroke::new(1.0, LINE), StrokeKind::Inside);
+    p.rect_filled(rect, CornerRadius::same(6), lerp_color(pal().card_hi, pal().accent, t));
+    p.rect_stroke(rect, CornerRadius::same(6), Stroke::new(1.0, pal().line), StrokeKind::Inside);
     let x = egui::lerp((rect.left() + 12.0)..=(rect.right() - 12.0), t);
-    p.circle_filled(pos2(x, rect.center().y), 8.5, lerp_color(WEAK, DEEP, t));
+    p.circle_filled(pos2(x, rect.center().y), 8.5, lerp_color(pal().weak, pal().deep, t));
     resp.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
 fn chip(ui: &mut Ui, text: &str, selected: bool) -> egui::Response {
-    let (fill, col) = if selected { (ACCENT.gamma_multiply(0.18), ACCENT) } else { (DEEP, WEAK) };
+    let (fill, col) = if selected { (pal().accent.gamma_multiply(0.18), pal().accent) } else { (pal().deep, pal().weak) };
     ui.add(
         egui::Button::new(RichText::new(text).color(col).font(FontId::monospace(12.5)))
             .fill(fill)
-            .stroke(Stroke::new(1.0, if selected { ACCENT.gamma_multiply(0.6) } else { LINE }))
-            .corner_radius(CornerRadius::same(8))
+            .stroke(Stroke::new(1.0, if selected { pal().accent.gamma_multiply(0.6) } else { pal().line }))
+            .corner_radius(CornerRadius::same(4))
             .min_size(vec2(44.0, 26.0)),
     )
     .on_hover_cursor(egui::CursorIcon::PointingHand)
@@ -578,21 +580,21 @@ fn chip(ui: &mut Ui, text: &str, selected: bool) -> egui::Response {
 
 fn icon_button(ui: &mut Ui, icon: &str) -> egui::Response {
     ui.add(
-        egui::Button::new(RichText::new(icon).font(FontId::new(15.0, icons())).color(ACCENT))
-            .fill(DEEP)
-            .stroke(Stroke::new(1.0, LINE))
-            .corner_radius(CornerRadius::same(9))
+        egui::Button::new(RichText::new(icon).font(FontId::new(15.0, icons())).color(pal().accent))
+            .fill(pal().deep)
+            .stroke(Stroke::new(1.0, pal().line))
+            .corner_radius(CornerRadius::same(4))
             .min_size(vec2(34.0, 30.0)),
     )
     .on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
 fn accent_button(ui: &mut Ui, text: &str, busy: bool) -> egui::Response {
-    let col = if busy { ACCENT2 } else { ACCENT };
+    let col = if busy { pal().accent2 } else { pal().accent };
     ui.add(
-        egui::Button::new(RichText::new(text).color(DEEP).font(FontId::new(13.0, bold())))
+        egui::Button::new(RichText::new(text).color(pal().on_accent).font(FontId::new(13.0, bold())))
             .fill(col)
-            .corner_radius(CornerRadius::same(9))
+            .corner_radius(CornerRadius::same(4))
             .min_size(vec2(0.0, 30.0)),
     )
     .on_hover_cursor(egui::CursorIcon::PointingHand)
@@ -611,8 +613,8 @@ fn position_pad(ui: &mut Ui, pos: &mut [f32; 2], size: Option<[f64; 2]>, picking
         }
     }
     let p = ui.painter();
-    p.rect_filled(rect, CornerRadius::same(12), DEEP);
-    let grid = LINE.gamma_multiply(0.45);
+    p.rect_filled(rect, CornerRadius::same(6), pal().deep);
+    let grid = pal().line.gamma_multiply(0.45);
     for i in 1..8 {
         let x = rect.left() + rect.width() * i as f32 / 8.0;
         p.line_segment([pos2(x, rect.top()), pos2(x, rect.bottom())], Stroke::new(1.0, grid));
@@ -621,18 +623,18 @@ fn position_pad(ui: &mut Ui, pos: &mut [f32; 2], size: Option<[f64; 2]>, picking
         let y = rect.top() + rect.height() * i as f32 / 5.0;
         p.line_segment([pos2(rect.left(), y), pos2(rect.right(), y)], Stroke::new(1.0, grid));
     }
-    let border = if picking { ACCENT2 } else if resp.hovered() { ACCENT.gamma_multiply(0.6) } else { LINE };
-    p.rect_stroke(rect, CornerRadius::same(12), Stroke::new(1.0, border), StrokeKind::Inside);
+    let border = if picking { pal().accent2 } else if resp.hovered() { pal().accent.gamma_multiply(0.6) } else { pal().line };
+    p.rect_stroke(rect, CornerRadius::same(6), Stroke::new(1.0, border), StrokeKind::Inside);
 
     let dot = pos2(rect.left() + pos[0] * rect.width(), rect.top() + pos[1] * rect.height());
-    let cross = ACCENT.gamma_multiply(0.35);
+    let cross = pal().accent.gamma_multiply(0.35);
     p.line_segment([pos2(rect.left(), dot.y), pos2(rect.right(), dot.y)], Stroke::new(1.0, cross));
     p.line_segment([pos2(dot.x, rect.top()), pos2(dot.x, rect.bottom())], Stroke::new(1.0, cross));
     for i in 0..6 {
-        p.circle_filled(dot, 7.0 + i as f32 * 2.0, ACCENT.gamma_multiply(0.06));
+        p.circle_filled(dot, 7.0 + i as f32 * 2.0, pal().accent.gamma_multiply(0.06));
     }
-    p.circle_filled(dot, 6.0, ACCENT);
-    p.circle_stroke(dot, 6.0, Stroke::new(2.0, DEEP));
+    p.circle_filled(dot, 6.0, pal().accent);
+    p.circle_stroke(dot, 6.0, Stroke::new(2.0, pal().deep));
     if resp.hovered() {
         ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair);
     }
@@ -644,71 +646,63 @@ fn truncate(s: &str, n: usize) -> String {
 
 fn setup_style(ctx: &egui::Context) {
     let mut fonts = FontDefinitions::default();
-    let mut load = |name: &str, paths: &[&str]| -> bool {
-        for path in paths {
-            if let Ok(bytes) = std::fs::read(path) {
+    let t = pal();
+    let mut load = |name: &str, path: &Option<std::path::PathBuf>| -> bool {
+        match path.as_ref().and_then(|p| std::fs::read(p).ok()) {
+            Some(bytes) => {
                 fonts.font_data.insert(name.into(), Arc::new(FontData::from_owned(bytes)));
-                return true;
+                true
             }
+            None => false,
         }
-        false
     };
-    let body = load("body", &["/usr/share/fonts/noto/NotoSans-Medium.ttf", "/usr/share/fonts/TTF/NotoSans-Medium.ttf"]);
-    let strong = load("strong", &["/usr/share/fonts/noto/NotoSans-SemiBold.ttf", "/usr/share/fonts/noto/NotoSans-Bold.ttf"]);
-    let nerd = load("nerd", &["/usr/share/fonts/TTF/JetBrainsMonoNerdFontPropo-Regular.ttf"]);
-    let mono = load("mono", &["/usr/share/fonts/TTF/JetBrainsMonoNerdFont-SemiBold.ttf", "/usr/share/fonts/TTF/JetBrainsMonoNerdFont-Regular.ttf"]);
+    let regular = load("rice", &t.font_regular);
+    let strong = load("rice-bold", &t.font_bold);
 
-    let prop = fonts.families.entry(FontFamily::Proportional).or_default();
-    if body {
-        prop.insert(0, "body".into());
-    }
-    if nerd {
-        prop.push("nerd".into());
+    for family in [FontFamily::Proportional, FontFamily::Monospace] {
+        if regular {
+            fonts.families.entry(family).or_default().insert(0, "rice".into());
+        }
     }
     let mut bold_family = Vec::new();
     if strong {
-        bold_family.push("strong".to_string());
+        bold_family.push("rice-bold".to_string());
     }
     bold_family.extend(fonts.families[&FontFamily::Proportional].iter().cloned());
     fonts.families.insert(bold(), bold_family);
-    let mut icon_family: Vec<String> = if nerd { vec!["nerd".into()] } else { vec![] };
-    icon_family.extend(fonts.families[&FontFamily::Proportional].iter().cloned());
-    fonts.families.insert(icons(), icon_family);
-    if mono {
-        fonts.families.entry(FontFamily::Monospace).or_default().insert(0, "mono".into());
-    }
+    fonts.families.insert(icons(), fonts.families[&FontFamily::Proportional].clone());
     ctx.set_fonts(fonts);
 
     let mut v = egui::Visuals::dark();
-    v.panel_fill = BG;
-    v.window_fill = CARD;
-    v.window_stroke = Stroke::new(1.0, LINE);
-    v.window_corner_radius = CornerRadius::same(12);
-    v.menu_corner_radius = CornerRadius::same(12);
-    v.extreme_bg_color = DEEP;
-    v.faint_bg_color = CARD_HI;
+    v.panel_fill = pal().bg;
+    v.window_fill = pal().card;
+    v.window_stroke = Stroke::new(1.0, pal().line);
+    v.window_corner_radius = CornerRadius::same(6);
+    v.menu_corner_radius = CornerRadius::same(6);
+    v.extreme_bg_color = pal().deep;
+    v.faint_bg_color = pal().card_hi;
     v.override_text_color = None;
-    v.selection.bg_fill = ACCENT.gamma_multiply(0.35);
-    v.selection.stroke = Stroke::new(1.5, ACCENT);
+    v.selection.bg_fill = pal().accent.gamma_multiply(0.35);
+    v.selection.stroke = Stroke::new(1.5, pal().accent);
     v.slider_trailing_fill = true;
-    v.hyperlink_color = ACCENT;
+    v.hyperlink_color = pal().accent;
     for (w, fill) in [
-        (&mut v.widgets.noninteractive, CARD),
-        (&mut v.widgets.inactive, DEEP),
-        (&mut v.widgets.hovered, CARD_HI),
-        (&mut v.widgets.active, CARD_HI),
-        (&mut v.widgets.open, CARD_HI),
+        (&mut v.widgets.noninteractive, pal().card),
+        (&mut v.widgets.inactive, pal().deep),
+        (&mut v.widgets.hovered, pal().card_hi),
+        (&mut v.widgets.active, pal().card_hi),
+        (&mut v.widgets.open, pal().card_hi),
     ] {
         w.bg_fill = fill;
         w.weak_bg_fill = fill;
-        w.corner_radius = CornerRadius::same(9);
-        w.fg_stroke.color = TEXT;
+        w.corner_radius = CornerRadius::same(4);
+        w.fg_stroke.color = pal().text;
     }
-    v.widgets.noninteractive.bg_stroke = Stroke::new(1.0, LINE);
-    v.widgets.inactive.bg_stroke = Stroke::new(1.0, LINE);
-    v.widgets.hovered.bg_stroke = Stroke::new(1.0, ACCENT.gamma_multiply(0.6));
-    v.widgets.active.bg_stroke = Stroke::new(1.0, ACCENT);
-    v.widgets.noninteractive.fg_stroke.color = WEAK;
+    v.widgets.noninteractive.bg_stroke = Stroke::new(1.0, pal().line);
+    v.widgets.inactive.bg_stroke = Stroke::new(1.0, pal().line);
+    v.widgets.hovered.bg_stroke = Stroke::new(1.0, pal().accent.gamma_multiply(0.6));
+    v.widgets.active.bg_stroke = Stroke::new(1.0, pal().accent);
+    v.widgets.noninteractive.fg_stroke.color = pal().weak;
 
     ctx.options_mut(|o| o.theme_preference = egui::ThemePreference::Dark);
     ctx.set_visuals_of(egui::Theme::Dark, v);
