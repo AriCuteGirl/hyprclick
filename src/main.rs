@@ -1,8 +1,11 @@
+mod afk;
 mod config;
 mod controller;
 mod engine;
+mod hotkey;
 mod hypr;
 mod ipc;
+mod setup;
 mod theme;
 mod ui;
 
@@ -17,9 +20,13 @@ pub const APP_ID: &str = "hyprclick";
 const USAGE: &str = "hyprclick — background autoclicker for Hyprland
 
 usage:
-  hyprclick            open the window
-  hyprclick toggle     start/stop clicking (bind this, e.g. ALT+H)
+  hyprclick                   open the window
+  hyprclick toggle            start/stop clicking (what the hotkey runs)
   hyprclick start|stop|status
+  hyprclick setup [KEYS]      bind the hotkey + window rule in Hyprland's config
+                              e.g. hyprclick setup 'ALT + J', 'CTRL + SHIFT + G',
+                              'mouse:275' (back side button), 'ALT + mouse:276'
+  hyprclick afk               anti-AFK in this terminal (target from the app)
 ";
 
 fn main() {
@@ -33,7 +40,32 @@ fn main() {
             None => println!("not running"),
         },
         Some("daemon") => daemon(),
+        Some("setup") => setup(std::env::args().nth(2)),
+        Some("afk") => afk::run_terminal(&Config::load()),
         _ => print!("{USAGE}"),
+    }
+}
+
+fn setup(keys: Option<String>) {
+    let mut cfg = Config::load();
+    if let Some(keys) = keys {
+        match hotkey::Hotkey::parse(&keys) {
+            Ok(hk) => cfg.hotkey = hk,
+            Err(e) => {
+                eprintln!("hyprclick setup: {e}");
+                std::process::exit(1);
+            }
+        }
+    }
+    match setup::apply(&cfg.hotkey) {
+        Ok(report) => {
+            cfg.save();
+            println!("{report}");
+        }
+        Err(e) => {
+            eprintln!("hyprclick setup: {e}");
+            std::process::exit(1);
+        }
     }
 }
 

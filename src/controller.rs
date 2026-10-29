@@ -1,4 +1,4 @@
-use crate::config::{Config, Mode};
+use crate::config::Config;
 use crate::engine::Engine;
 use crate::hypr;
 use std::time::Instant;
@@ -70,7 +70,11 @@ impl Controller {
         self.clicks = clicks;
         self.paused = paused;
         if let Some(reason) = ended {
+            // Fail-safe: the plugin stopped on its own (target window gone).
             self.started = None;
+            if self.cfg.notify {
+                hypr::notify(&format!("hyprclick stopped: {reason}"));
+            }
             self.error = Some(reason);
         }
     }
@@ -82,10 +86,6 @@ impl Controller {
         } else {
             format!("idle · mode {:?}", self.cfg.mode)
         }
-    }
-
-    pub fn needs_target(&self) -> bool {
-        self.cfg.mode == Mode::Window || (self.cfg.mode == Mode::Cursor && self.cfg.cursor_only_in_target)
     }
 }
 

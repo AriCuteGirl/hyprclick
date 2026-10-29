@@ -1,6 +1,7 @@
-use crate::config::{Config, Mode, MouseButton, PadButton, MAX_CPS};
+use crate::config::{AfkAction, AfkMethod, Config, Mode, MouseButton, MAX_CPS};
 use crate::controller::{fmt_cps, Controller};
-use crate::{hypr, ipc, theme, APP_ID};
+use crate::hotkey::Hotkey;
+use crate::{afk, hypr, ipc, setup, theme, APP_ID};
 use eframe::egui::{
     self, pos2, vec2, Align, Align2, Color32, CornerRadius, FontData, FontDefinitions, FontFamily,
     FontId, Layout, Margin, Rect, RichText, Sense, Stroke, StrokeKind, Ui,
@@ -17,11 +18,13 @@ fn pal() -> &'static theme::Theme {
 const I_POWER: &str = "\u{f011}";
 const I_WINDOW: &str = "\u{f2d0}";
 const I_CURSOR: &str = "\u{f245}";
-const I_PAD: &str = "\u{f11b}";
 const I_REFRESH: &str = "\u{f021}";
 const I_TARGET: &str = "\u{f05b}";
 const I_HEART: &str = "\u{f004}";
 const I_BOLT: &str = "\u{f0e7}";
+const I_COFFEE: &str = "\u{f0f4}";
+const I_KEY: &str = "\u{f084}";
+const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
 const PICK_SECS: f32 = 3.0;
 const MAX_CONTENT_WIDTH: f32 = 400.0;
@@ -37,6 +40,8 @@ enum PluginState {
 enum Tab {
     Target,
     Click,
+    Afk,
+    Key,
 }
 
 struct App {
@@ -51,6 +56,14 @@ struct App {
     saved: String,
     dirty: bool,
     tab: Tab,
+    afk: afk::AntiAfk,
+    /// Settings the running anti-AFK was started with (restart on change).
+    afk_key: String,
+    afk_err: Option<String>,
+    /// Waiting for the next key/mouse press to become the hotkey.
+    recording: Option<Instant>,
+    key_text: String,
+    key_msg: Option<(bool, String)>,
 }
 
 pub fn run() {
@@ -89,6 +102,9 @@ impl App {
             ctx2.request_repaint();
         });
         let saved = serde_json::to_string(&ctrl.lock().unwrap().cfg).unwrap_or_default();
+        let mut afk = afk::AntiAfk::new();
+        let ctx3 = ctx.clone();
+        afk.on_nudge(move || ctx3.request_repaint());
         Self {
             ctrl,
             plugin,
@@ -101,6 +117,12 @@ impl App {
             saved,
             dirty: false,
             tab: Tab::Click,
+            afk,
+            afk_key: String::new(),
+            afk_err: None,
+            recording: None,
+            key_text: String::new(),
+            key_msg: None,
         }
     }
 
@@ -154,6 +176,38 @@ impl App {
             }
         }
 
+        if let Some(since) = self.recording {
+            // Skip the click that started recording.
+            if since.elapsed() > Duration::from_millis(250) {
+                for ev in ctx.input(|i| i.events.clone()) {
+                    let hk = match ev {
+                        egui::Event::Key { key: egui::Key::Escape, pressed: true, modifiers, .. } if modifiers.is_none() => {
+                            self.recording = None;
+                            break;
+                        }
+                        egui::Event::Key { key, pressed: true, repeat: false, modifiers, .. } => Hotkey::from_key(key, modifiers),
+                        egui::Event::PointerButton { button, pressed: true, modifiers, .. } => Hotkey::from_pointer(button, modifiers),
+                        _ => None,
+                    };
+                    if let Some(hk) = hk {
+                        self.recording = None;
+                        c.cfg.hotkey = hk;
+                        self.apply_hotkey(c);
+                        break;
+                    }
+                }
+            }
+            ctx.request_repaint_after(Duration::from_millis(50));
+        }
+
+        // Restart anti-AFK when its settings or target change.
+        if self.afk.running() && afk_key(&c.cfg) != self.afk_key && !ctx.input(|i| i.pointer.any_down()) {
+            self.start_afk(&c.cfg.clone());
+        }
+        if self.afk.running() {
+            ctx.request_repaint_after(Duration::from_millis(250));
+        }
+
         if c.running() || self.pick_until.is_some() {
             ctx.request_repaint_after(Duration::from_millis(16));
         } else {
@@ -187,19 +241,22 @@ impl eframe::App for App {
                             self.header(ui);
                             self.hero(ui, &mut c);
                             self.mode_card(ui, &mut c);
-                            // Target and click settings share one spot so
-                            // the window never needs scrolling.
-                            if c.needs_target() {
-                                let tabs = [(Tab::Target, format!("{I_TARGET}  Target")), (Tab::Click, format!("{I_BOLT}  Click"))];
-                                segmented(ui, "tab", &mut self.tab, &tabs);
-                            } else {
-                                self.tab = Tab::Click;
-                            }
+                            // Settings share one spot so the window never
+                            // needs scrolling.
+                            let tabs = [
+                                (Tab::Target, format!("{I_TARGET} Target")),
+                                (Tab::Click, format!("{I_BOLT} Click")),
+                                (Tab::Afk, format!("{I_COFFEE} AFK")),
+                                (Tab::Key, format!("{I_KEY} Key")),
+                            ];
+                            segmented(ui, "tab", &mut self.tab, &tabs);
                             match self.tab {
                                 Tab::Target => self.target_card(ui, &mut c),
                                 Tab::Click => self.click_card(ui, &mut c),
+                                Tab::Afk => self.afk_card(ui, &mut c),
+                                Tab::Key => self.key_card(ui, &mut c),
                             }
-                            self.footer(ui);
+                            self.footer(ui, &mut c);
                         });
                     });
                 });
@@ -246,7 +303,7 @@ impl App {
                     } else if running {
                         c.desc.clone()
                     } else {
-                        "ALT+H or the button to start".into()
+                        format!("{} or the button to start", c.cfg.hotkey.label())
                     };
                     ui.label(RichText::new(sub).color(pal().weak).size(11.5));
                     ui.add_space(2.0);
@@ -273,13 +330,11 @@ impl App {
                 &[
                     (Mode::Window, format!("{I_WINDOW}  Window")),
                     (Mode::Cursor, format!("{I_CURSOR}  Cursor")),
-                    (Mode::Gamepad, format!("{I_PAD}  Gamepad")),
                 ],
             );
             let hint = match c.cfg.mode {
                 Mode::Window => "Clicks the chosen window in the background, mouse stays free.",
                 Mode::Cursor => "Clicks wherever your cursor is.",
-                Mode::Gamepad => "Virtual Xbox pad, works in the background (Roblox: RT = tool).",
             };
             ui.label(RichText::new(hint).color(pal().weak).size(11.5));
         });
@@ -393,16 +448,9 @@ impl App {
 
     fn click_card(&mut self, ui: &mut Ui, c: &mut Controller) {
         card(ui, None, |ui| {
-            if c.cfg.mode == Mode::Gamepad {
-                let row1: Vec<(PadButton, String)> = PadButton::ALL[..4].iter().map(|b| (*b, b.label().to_string())).collect();
-                let row2: Vec<(PadButton, String)> = PadButton::ALL[4..].iter().map(|b| (*b, b.label().to_string())).collect();
-                segmented(ui, "pad1", &mut c.cfg.pad_button, &row1);
-                segmented(ui, "pad2", &mut c.cfg.pad_button, &row2);
-            } else {
-                let opts: Vec<(MouseButton, String)> =
-                    [MouseButton::Left, MouseButton::Right, MouseButton::Middle].iter().map(|b| (*b, b.label().to_string())).collect();
-                segmented(ui, "button", &mut c.cfg.button, &opts);
-            }
+            let opts: Vec<(MouseButton, String)> =
+                [MouseButton::Left, MouseButton::Right, MouseButton::Middle].iter().map(|b| (*b, b.label().to_string())).collect();
+            segmented(ui, "button", &mut c.cfg.button, &opts);
 
             ui.add_space(4.0);
             ui.horizontal(|ui| {
@@ -458,15 +506,140 @@ impl App {
         });
     }
 
-    fn footer(&mut self, ui: &mut Ui) {
+    fn footer(&mut self, ui: &mut Ui, c: &mut Controller) {
         if let PluginState::Failed(e) = &*self.plugin.lock().unwrap() {
             ui.label(RichText::new(format!("Window mode unavailable: {e}")).color(pal().bad).size(12.0));
         }
-        ui.label(RichText::new("ALT+H toggles from anywhere  ·  hyprclick toggle").color(pal().weak).size(10.5));
+        ui.label(RichText::new(format!("{} toggles from anywhere", c.cfg.hotkey.label())).color(pal().weak).size(10.5));
+    }
+
+    fn afk_card(&mut self, ui: &mut Ui, c: &mut Controller) {
+        card(ui, None, |ui| {
+            let mut on = self.afk.running();
+            ui.horizontal(|ui| {
+                if toggle_switch(ui, &mut on).changed() {
+                    if on {
+                        self.start_afk(&c.cfg);
+                    } else {
+                        self.afk.stop();
+                    }
+                }
+                ui.label(RichText::new("Anti-AFK").color(pal().text));
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    ui.label(RichText::new("min").color(pal().weak));
+                    ui.add(egui::DragValue::new(&mut c.cfg.afk_minutes).range(0.5..=60.0).speed(0.1).max_decimals(1));
+                    ui.label(RichText::new("every").color(pal().weak));
+                });
+            });
+            let methods = [(AfkMethod::Window, format!("{I_WINDOW} Window")), (AfkMethod::Gamepad, format!("{I_COFFEE} Gamepad"))];
+            segmented(ui, "afk_method", &mut c.cfg.afk_method, &methods);
+            if c.cfg.afk_method == AfkMethod::Window {
+                let actions = [(AfkAction::Wiggle, "Wiggle mouse".to_string()), (AfkAction::RightClick, "Right-click".to_string())];
+                segmented(ui, "afk_action", &mut c.cfg.afk_action, &actions);
+            }
+            let hint = match c.cfg.afk_method {
+                AfkMethod::Window => "Pokes only the target window, in the background.",
+                AfkMethod::Gamepad => "roblox-caffeine style virtual pad. Every game sees it.",
+            };
+            ui.label(RichText::new(hint).color(pal().weak).size(11.0));
+
+            ui.separator();
+            let mono = |size: f32| FontId::monospace(size);
+            let s = self.afk.status();
+            if let Some(e) = self.afk_err.as_ref().or(s.error.as_ref()) {
+                ui.label(RichText::new(format!("⚠ {e}")).color(pal().bad).size(11.5));
+            }
+            if s.running {
+                ui.label(RichText::new(&s.desc).color(pal().weak).font(mono(11.0)));
+            }
+            if s.nudges.is_empty() && !s.running {
+                ui.label(
+                    RichText::new(format!("Uses the {} window from Target. Stops by itself if it closes.", c.cfg.target_class))
+                        .color(pal().weak)
+                        .size(11.0),
+                );
+            }
+            for n in s.nudges.iter().rev().take(3).rev() {
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new("☕").color(pal().accent2).font(mono(12.0)));
+                    ui.label(RichText::new(format!("#{:03}", n.number)).color(pal().text).font(mono(12.0)));
+                    ui.label(RichText::new(n.at.format("%I:%M %p").to_string()).color(pal().weak).font(mono(12.0)));
+                    ui.label(RichText::new(n.dir).color(pal().accent).font(mono(12.0)));
+                });
+            }
+            if s.running && s.next_at.is_some() {
+                let spin = SPINNER[(ui.input(|i| i.time) * 4.0) as usize % SPINNER.len()];
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new(spin).color(pal().accent2).font(mono(12.0)));
+                    ui.label(RichText::new(format!("Next in {}", s.next_in())).color(pal().text).font(mono(12.0)));
+                    ui.label(RichText::new(afk::bar(s.progress(), 10)).color(pal().good).font(mono(12.0)));
+                    ui.label(RichText::new(format!("• {}", s.uptime())).color(pal().weak).font(mono(12.0)));
+                });
+            }
+        });
+    }
+
+    fn start_afk(&mut self, cfg: &Config) {
+        match self.afk.start(cfg) {
+            Ok(()) => {
+                self.afk_err = None;
+                self.afk_key = afk_key(cfg);
+            }
+            Err(e) => self.afk_err = Some(e),
+        }
+    }
+
+    fn key_card(&mut self, ui: &mut Ui, c: &mut Controller) {
+        card(ui, None, |ui| {
+            ui.label(RichText::new("Toggle hotkey").color(pal().weak).size(11.0));
+            ui.label(RichText::new(c.cfg.hotkey.label()).font(FontId::new(20.0, bold())).color(pal().accent));
+            let recording = self.recording.is_some();
+            let label = if recording { "press a key or mouse button… (Esc cancels)".to_string() } else { format!("{I_KEY}  Record new hotkey") };
+            if accent_button(ui, &label, recording).clicked() && !recording {
+                self.recording = Some(Instant::now());
+                self.key_msg = None;
+            }
+            ui.horizontal(|ui| {
+                let w = ui.available_width() - 60.0;
+                let edit = egui::TextEdit::singleline(&mut self.key_text).hint_text("or type: SUPER + J").desired_width(w);
+                let enter = ui.add(edit).lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                if ui.button("Set").clicked() || enter {
+                    match Hotkey::parse(&self.key_text) {
+                        Ok(hk) => {
+                            c.cfg.hotkey = hk;
+                            self.key_text.clear();
+                            self.apply_hotkey(c);
+                        }
+                        Err(e) => self.key_msg = Some((false, e)),
+                    }
+                }
+            });
+            if let Some((ok, msg)) = &self.key_msg {
+                ui.label(RichText::new(msg).color(if *ok { pal().good } else { pal().bad }).size(11.0));
+            }
+            ui.label(
+                RichText::new("Side mouse buttons work too. SUPER combos and keys Hyprland already uses can't be recorded, type those.")
+                    .color(pal().weak)
+                    .size(11.0),
+            );
+        });
+    }
+
+    /// Writes the hotkey into Hyprland's config (same as `hyprclick setup`).
+    fn apply_hotkey(&mut self, c: &mut Controller) {
+        c.cfg.save();
+        self.key_msg = Some(match setup::apply(&c.cfg.hotkey) {
+            Ok(report) => (true, report),
+            Err(e) => (false, e),
+        });
     }
 }
 
 // ───────────────────────────── widgets ─────────────────────────────
+
+fn afk_key(cfg: &Config) -> String {
+    format!("{:?}{:?}{}{}{}", cfg.afk_method, cfg.afk_action, cfg.afk_minutes, cfg.target_class, cfg.target_title)
+}
 
 fn bold() -> FontFamily {
     FontFamily::Name("bold".into())

@@ -4,13 +4,29 @@ use std::time::Duration;
 
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum Mode {
-    /// Hyprland plugin clicks inside the target window without focusing it.
-    #[default]
-    Window,
     /// Virtual mouse clicks wherever the real cursor is.
     Cursor,
-    /// Virtual Xbox pad; games read it even when unfocused (roblox-caffeine trick).
+    /// Hyprland plugin clicks inside the target window without focusing it.
+    /// (Also what an old "Gamepad" setting loads as.)
+    #[default]
+    #[serde(other)]
+    Window,
+}
+
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum AfkMethod {
+    /// Plugin pokes only the target window.
+    #[default]
+    Window,
+    /// Virtual Xbox pad, roblox-caffeine style (every game sees it).
     Gamepad,
+}
+
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum AfkAction {
+    #[default]
+    Wiggle,
+    RightClick,
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug, Default)]
@@ -40,45 +56,6 @@ impl MouseButton {
     }
 }
 
-#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug, Default)]
-pub enum PadButton {
-    #[default]
-    RT,
-    LT,
-    A,
-    B,
-    X,
-    Y,
-    RB,
-    LB,
-}
-
-impl PadButton {
-    pub const ALL: [PadButton; 8] = [
-        PadButton::RT,
-        PadButton::LT,
-        PadButton::A,
-        PadButton::B,
-        PadButton::X,
-        PadButton::Y,
-        PadButton::RB,
-        PadButton::LB,
-    ];
-
-    pub fn label(self) -> &'static str {
-        match self {
-            PadButton::RT => "RT",
-            PadButton::LT => "LT",
-            PadButton::A => "A",
-            PadButton::B => "B",
-            PadButton::X => "X",
-            PadButton::Y => "Y",
-            PadButton::RB => "RB",
-            PadButton::LB => "LB",
-        }
-    }
-}
-
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(default)]
 pub struct Config {
@@ -90,7 +67,6 @@ pub struct Config {
     /// Click spot as a fraction of the window size, so it survives resizes.
     pub pos: [f32; 2],
     pub button: MouseButton,
-    pub pad_button: PadButton,
     pub cps: f64,
     pub hold_enabled: bool,
     pub hold_ms: f64,
@@ -102,6 +78,11 @@ pub struct Config {
     /// mouse last was inside it) instead of moving it to `pos`.
     pub at_mouse: bool,
     pub notify: bool,
+    pub afk_method: AfkMethod,
+    pub afk_action: AfkAction,
+    pub afk_minutes: f64,
+    /// Toggle key, written into Hyprland's config by `hyprclick setup`.
+    pub hotkey: crate::hotkey::Hotkey,
 }
 
 impl Default for Config {
@@ -112,7 +93,6 @@ impl Default for Config {
             target_title: String::new(),
             pos: [0.5, 0.5],
             button: MouseButton::Left,
-            pad_button: PadButton::RT,
             cps: 20.0,
             hold_enabled: false,
             hold_ms: 15.0,
@@ -120,6 +100,10 @@ impl Default for Config {
             pause_when_hidden: true,
             at_mouse: false,
             notify: true,
+            afk_method: AfkMethod::Window,
+            afk_action: AfkAction::Wiggle,
+            afk_minutes: 10.0,
+            hotkey: crate::hotkey::Hotkey::default(),
         }
     }
 }

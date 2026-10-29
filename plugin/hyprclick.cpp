@@ -9,6 +9,7 @@
 //   hyprclick ping                     -> "hyprclick ok <version> <path of this .so>"
 //   hyprclick start <selector> <x> <y> <button> <interval_ns> <hold_ns> [only_visible] [at_mouse]
 //   hyprclick click <selector> <x> <y> <button>
+//   hyprclick afk <selector> <x> <y> <dx> <dy> <button|0>   anti-AFK nudge
 //   hyprclick stop
 //   hyprclick status
 // <selector> is a Hyprland window selector without spaces, e.g. address:0x55d0c0ffee.
@@ -47,7 +48,7 @@
 inline HANDLE PHANDLE = nullptr;
 
 // Bump on any behaviour change: the app reloads a plugin whose version differs.
-constexpr int HYPRCLICK_VERSION = 10;
+constexpr int HYPRCLICK_VERSION = 12;
 
 namespace {
     struct SClicker {
@@ -224,7 +225,9 @@ namespace {
     // `holding`: the button stays down, so focus stays on the target until the
     // release. Xwayland drops held buttons when the pointer enters another X
     // window, and Wayland toolkits may cancel a press on leave.
-    bool sendButtons(PHLWINDOW window, const Vector2D& pos, uint32_t button, std::initializer_list<wl_pointer_button_state> states, bool holding = false) {
+    // `motions`: extra pointer moves after the buttons (anti-AFK wiggle).
+    bool sendButtons(PHLWINDOW window, const Vector2D& pos, uint32_t button, std::initializer_list<wl_pointer_button_state> states, bool holding = false,
+                     const std::vector<Vector2D>& motions = {}) {
         if (!window || !window->m_isMapped || !window->wlSurface())
             return false;
 
@@ -250,6 +253,10 @@ namespace {
                     p->sendButton(NOW, button, STATE);
                     p->sendFrame();
                 }
+                for (const auto& m : motions) {
+                    p->sendMotion(NOW, m);
+                    p->sendFrame();
+                }
             }
             g_clicker.directSurf = SURF;
         } else {
@@ -258,6 +265,10 @@ namespace {
             g_pSeatManager->sendPointerFrame();
             for (const auto STATE : states) {
                 g_pSeatManager->sendPointerButton(NOW, button, STATE);
+                g_pSeatManager->sendPointerFrame();
+            }
+            for (const auto& m : motions) {
+                g_pSeatManager->sendPointerMotion(NOW, m);
                 g_pSeatManager->sendPointerFrame();
             }
         }
@@ -450,6 +461,41 @@ namespace {
         return "ok";
     }
 
+    // Anti-AFK nudge: move the target's pointer from `pos` by (dx, dy), and
+    // tap a button there if given. Out-and-back in one go would get merged
+    // into no movement by some apps, so it stays moved. Same background delivery as clicks. Skipped while
+    // the user's own cursor is on the target (they're not AFK then).
+    std::string cmdAfk(std::istringstream& args) {
+        std::string selector;
+        double      x = 0, y = 0, dx = 0, dy = 0;
+        uint32_t    button = 0;
+        if (!(args >> selector >> x >> y >> dx >> dy >> button))
+            return "error: usage: hyprclick afk <selector> <x> <y> <dx> <dy> <button|0>";
+        const auto WINDOW = resolve(selector);
+        if (!WINDOW)
+            return "error: window not found";
+        if (WINDOW->wlSurface() && g_pSeatManager->m_state.pointerFocus.lock() == WINDOW->wlSurface()->resource())
+            return "skipped: user is on it";
+        if (g_clicker.restorePending)
+            restoreFocus(); // don't stack on a click still in flight
+
+        auto& C = g_clicker;
+        Vector2D pos = {x, y};
+        if (C.window.lock() == WINDOW && C.lastMouse)
+            pos = *C.lastMouse; // where the game's pointer already is
+        const auto BOX  = WINDOW->getWindowMainSurfaceBox();
+        const auto AWAY = Vector2D{std::clamp(pos.x + dx, 0.0, std::max(0.0, BOX.w - 1)), std::clamp(pos.y + dy, 0.0, std::max(0.0, BOX.h - 1))};
+
+        if (raiseX11(WINDOW))
+            usleep(X11_RAISE_SETTLE_NS / 1000);
+        activateX11(WINDOW);
+        if (button >= 272 && button <= 279)
+            sendButtons(WINDOW, pos, button, {WL_POINTER_BUTTON_STATE_PRESSED, WL_POINTER_BUTTON_STATE_RELEASED}, false, {AWAY});
+        else
+            sendButtons(WINDOW, pos, 0, {}, false, {AWAY});
+        return "ok";
+    }
+
     std::string cmdClick(std::istringstream& args) {
         std::string selector;
         double      x = 0, y = 0;
@@ -477,6 +523,8 @@ namespace {
         }
         if (sub == "start")
             return cmdStart(args);
+        if (sub == "afk")
+            return cmdAfk(args);
         if (sub == "click")
             return cmdClick(args);
         if (sub == "stop") {

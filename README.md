@@ -4,19 +4,31 @@ Background autoclicker for Hyprland, written in Rust with an egui UI. The window
 
 ## Modes
 
-- **Window**: clicks a chosen spot inside a chosen window. The window doesn't need focus and your cursor stays where it is. By default it pauses while the window's workspace isn't shown on any monitor (so Roblox on one screen keeps clicking while you use the other). Turn that off to click on hidden workspaces too. A small Hyprland plugin (`plugin/hyprclick.cpp`) sends pointer events straight to the window's surface. Timing runs on a timerfd inside Hyprland, so there's no IPC per click.
+- **Window**: clicks a chosen spot inside a chosen window. The window doesn't need focus and your cursor stays where it is. By default it pauses while the window's workspace isn't shown on any monitor, so Roblox on one screen keeps clicking while you use the other. A small Hyprland plugin (`plugin/hyprclick.cpp`) sends pointer events straight to the window's surface, timed by a timerfd inside Hyprland. It clicks at a picked spot or "where the mouse is", and always right under your cursor while your cursor is inside the window.
 - **Cursor**: classic. A uinput virtual mouse clicks wherever the cursor is. Optionally it only clicks while the target window has focus.
-- **Gamepad**: a virtual Xbox 360 pad (the roblox-caffeine trick). Games read it in the background. In Roblox, RT uses the tool.
 
-Window mode clicks either at a picked spot or "where the mouse is": the spot your mouse last was inside the window, so the game's pointer never moves.
+Button: left/right/middle. Speed: 0.1–1000 CPS. Hold duration is off by default (instant press + release).
 
-Button: left/right/middle (or pad button). Speed: 0.1–1000 CPS. Hold duration is off by default, so press and release go out together.
+Fail-safe: clicking stops, with a notification, when the target window closes or crashes. A restarted game is a new window and is never clicked automatically.
+
+## Anti-AFK
+
+Every few minutes (default 10) it pokes the target window, so Roblox doesn't kick you for idling:
+
+- **Window**: the plugin moves the target's own pointer 8 px in a random diagonal (or taps right-click), in the background, only for that window.
+- **Gamepad**: the roblox-caffeine method. A virtual Xbox pad nudges both sticks; every game sees it.
+
+It's locked to the exact target window and stops when that window goes away. It runs from the app's AFK tab, or in a terminal with caffeine-style output: `hyprclick afk`.
+
+## Hotkey
+
+`hyprclick setup` writes the toggle hotkey and the small floating-window rule into `~/.config/hypr/hyprclick.lua` (or `hyprclick.conf` on the classic config). It adds one line to `hyprland.lua`/`hyprland.conf` to load it (with a backup), then reloads Hyprland. Change it from the app's Key tab by pressing the new combo (side mouse buttons work), or with `hyprclick setup 'ALT + J'`, `'CTRL + SHIFT + G'`, `'mouse:275'` (back), `'ALT + mouse:276'`.
 
 ## Use
 
 ```
 hyprclick            # open the window
-hyprclick toggle     # bound to ALT+H in ~/.config/hypr/custom/keybinds.lua
+hyprclick toggle     # what the hotkey runs (default ALT+H)
 hyprclick start|stop|status
 ```
 
