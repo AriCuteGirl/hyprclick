@@ -539,7 +539,7 @@ impl App {
             }
             let hint = match c.cfg.afk_method {
                 AfkMethod::Window => "Pokes only the target window, in the background.",
-                AfkMethod::Gamepad => "roblox-caffeine style virtual pad. Every game sees it.",
+                AfkMethod::Gamepad => "roblox-caffeine style pad. Roblox reacts in-game only.",
             };
             ui.label(RichText::new(hint).color(pal().weak).size(11.0));
 
@@ -548,9 +548,6 @@ impl App {
             let s = self.afk.status();
             if let Some(e) = self.afk_err.as_ref().or(s.error.as_ref()) {
                 ui.label(RichText::new(format!("⚠ {e}")).color(pal().bad).size(11.5));
-            }
-            if let (true, Some(w)) = (s.running, &s.warning) {
-                ui.label(RichText::new(format!("! {w}")).color(pal().accent2).size(11.0));
             }
             if s.running {
                 ui.label(RichText::new(&s.desc).color(pal().weak).font(mono(11.0)));

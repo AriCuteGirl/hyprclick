@@ -4,9 +4,9 @@
 //!   right-click) in the background, like a click, only for that window.
 //! - Gamepad: the roblox-caffeine way, a virtual Xbox pad nudges both sticks.
 //!   Games read pads even when unfocused, but every game sees it. Roblox
-//!   (Sober) only picks up pads that exist when it starts, so the pad lives
-//!   in a small always-running service (`hyprclick pad`, started at login by
-//!   `hyprclick setup`) and the nudges are sent to it.
+//!   only reacts while you're inside a game. The pad lives in a small
+//!   always-running service (`hyprclick pad`, started at login by
+//!   `hyprclick setup`) so it isn't re-plugged every time anti-AFK starts.
 //! Either way it's locked to the target window and stops if that window goes
 //! away (closed or crashed).
 
@@ -41,8 +41,6 @@ pub struct Nudge {
 #[derive(Default)]
 pub struct Status {
     pub running: bool,
-    /// Not fatal, e.g. "Roblox hasn't picked up the pad yet".
-    pub warning: Option<String>,
     /// What it's poking, e.g. "org.vinegarhq.Sober · window".
     pub desc: String,
     pub interval: Duration,
@@ -128,8 +126,6 @@ impl AntiAfk {
                 Driver::Pad
             }
         };
-        let warning = (cfg.afk_method == AfkMethod::Gamepad && pad_seen_by_game() == Some(false))
-            .then(|| "Roblox hasn't picked up the virtual pad: restart Roblox once (the pad stays running from now on)".to_string());
         let method = match cfg.afk_method {
             AfkMethod::Window => "window",
             AfkMethod::Gamepad => "gamepad",
@@ -140,7 +136,6 @@ impl AntiAfk {
             *s = Status {
                 running: true,
                 desc: format!("{} · {method}", target.class),
-                warning,
                 interval,
                 started: Some(Instant::now()),
                 ..Default::default()
@@ -369,30 +364,6 @@ pub fn ensure_pad_service() -> Result<(), String> {
     Err("virtual pad service didn't start (/dev/uinput access?)".into())
 }
 
-/// Whether a Roblox/Sober process has the pad open. None if unknown.
-pub fn pad_seen_by_game() -> Option<bool> {
-    let node = pad_node()?;
-    let mut game_found = false;
-    for entry in std::fs::read_dir("/proc").ok()?.flatten() {
-        let pid = entry.file_name();
-        if !pid.to_string_lossy().bytes().all(|b| b.is_ascii_digit()) {
-            continue;
-        }
-        let comm = std::fs::read_to_string(entry.path().join("comm")).unwrap_or_default().to_lowercase();
-        let cmd = std::fs::read_to_string(entry.path().join("cmdline")).unwrap_or_default().to_lowercase();
-        if !(comm.contains("sober") || cmd.contains("sober") || cmd.contains("roblox")) {
-            continue;
-        }
-        game_found = true;
-        for fd in std::fs::read_dir(entry.path().join("fd")).into_iter().flatten().flatten() {
-            if std::fs::read_link(fd.path()).is_ok_and(|t| t.to_string_lossy() == node) {
-                return Some(true);
-            }
-        }
-    }
-    game_found.then_some(false)
-}
-
 /// `hyprclick pad`: own the virtual Xbox pad for as long as the session
 /// runs (started at login), and nudge it on request.
 pub fn run_pad_service() {
@@ -483,11 +454,6 @@ pub fn run_terminal(cfg: &Config) {
         }
         if let Some(e) = &s.error {
             println!("{CLEAR}error: {e}");
-        }
-        if let Some(w) = &s.warning {
-            if shown == 0 && tick == 0 {
-                println!("{YELLOW}!{RESET} {w}\n");
-            }
         }
         let new: Vec<Nudge> = s.nudges.iter().filter(|n| n.number > shown).cloned().collect();
         for n in new {
