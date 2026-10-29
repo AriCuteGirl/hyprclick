@@ -117,9 +117,10 @@ fn apply_kde(hotkey: &Hotkey) -> Result<String, String> {
     let action = vec![SHORTCUT_FILE, "_launch", "hyprclick", "Toggle autoclicker"];
     const ACCEL: [&str; 3] = ["org.kde.kglobalaccel", "/kglobalaccel", "org.kde.KGlobalAccel"];
     kde::call(ACCEL[0], ACCEL[1], ACCEL[2], "doRegister", &(&action,))?;
-    // 4 = NoAutoloading: take this key, don't keep a saved older one.
+    // 2 = SetPresent: grab the key now (else it only works after the next
+    // login), 4 = NoAutoloading: take this key, not a saved older one.
     let keys = vec![(vec![key],)];
-    let set: Vec<(Vec<i32>,)> = kde::call(ACCEL[0], ACCEL[1], ACCEL[2], "setShortcutKeys", &(&action, keys, 4u32))?.body().deserialize().map_err(|e| e.to_string())?;
+    let set: Vec<(Vec<i32>,)> = kde::call(ACCEL[0], ACCEL[1], ACCEL[2], "setShortcutKeys", &(&action, keys, 6u32))?.body().deserialize().map_err(|e| e.to_string())?;
     if !set.iter().any(|(k,)| k.first() == Some(&key)) {
         return Err(format!("{} is already a KDE shortcut, pick another (or free it in System Settings → Shortcuts)", hotkey.label()));
     }
