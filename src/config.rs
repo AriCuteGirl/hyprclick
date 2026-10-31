@@ -115,9 +115,9 @@ impl Default for Config {
             afk_action: AfkAction::Wiggle,
             afk_minutes: 10.0,
             hotkey: crate::hotkey::Hotkey::default(),
-            lag_timed_key: crate::hotkey::Hotkey { mods: vec!["ALT".into()], key: "J".into() },
-            lag_toggle_key: crate::hotkey::Hotkey { mods: vec!["ALT".into()], key: "K".into() },
-            lag_hold_key: crate::hotkey::Hotkey { mods: vec!["ALT".into()], key: "L".into() },
+            lag_timed_key: crate::hotkey::Hotkey { mods: vec!["ALT".into()], key: "Z".into() },
+            lag_toggle_key: crate::hotkey::Hotkey { mods: vec!["ALT".into()], key: "X".into() },
+            lag_hold_key: crate::hotkey::Hotkey { mods: vec!["ALT".into()], key: "C".into() },
         }
     }
 }
