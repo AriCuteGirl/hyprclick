@@ -730,7 +730,7 @@ impl App {
             if !lag::installed() {
                 ui.label(RichText::new("lagswitch isn't installed").color(pal().text));
                 ui.label(
-                    RichText::new("It's a separate root service, so hyprclick itself never needs root. Install it with scripts/install.sh from the lagswitch repo.")
+                    RichText::new("It's a separate root service, so hyprclick itself never needs root. Install it with lagswitch/scripts/install.sh from the hyprclick repo.")
                         .color(pal().weak)
                         .size(11.0),
                 );
