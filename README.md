@@ -110,10 +110,13 @@ Every mode stops at the Max setting, 30 seconds by default.
 Changing firewall rules needs root, so this runs through [lagswitch](lagswitch/README.md), a small root service with its own install step. hyprclick itself never needs root and works normally without it:
 
 ```bash
-cd lagswitch
+git clone https://github.com/AriCuteGirl/hyprclick
+cd hyprclick/lagswitch
 bash scripts/install.sh
 hyprclick setup
 ```
+
+It needs Rust to build, plus nftables 1.0.8 or newer, systemd and cgroup v2.
 
 **Using this in online games can break their rules and get your account banned.** Its limits are listed in the [lagswitch README](lagswitch/README.md#limitations).
 
