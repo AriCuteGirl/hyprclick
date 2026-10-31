@@ -1,6 +1,6 @@
 [Unit]
 Description=lagswitch per-app network freeze daemon
-After=network-pre.target NetworkManager.service
+After=network-pre.target
 
 [Service]
 ExecStart=/usr/local/bin/lagswitchd --uid @UID@
@@ -11,7 +11,6 @@ RestartSec=1
 RuntimeDirectory=lagswitch
 RuntimeDirectoryMode=0755
 RuntimeDirectoryPreserve=restart
-StateDirectory=lagswitch
 CapabilityBoundingSet=CAP_NET_ADMIN CAP_CHOWN CAP_FOWNER
 NoNewPrivileges=yes
 ProtectSystem=strict

@@ -19,7 +19,7 @@ const USAGE: &str = "usage:
   lagswitch config
   lagswitch set [--whole-pc true|false] [--app NAME] [--ms N] [--dir in|out|both] [--cap-ms N]
 
---whole-pc turns networking off for the whole PC. With no target named, the
+--whole-pc blocks the network for the whole PC. With no target named, the
 saved choice is used; defaults come from ~/.config/lagswitch/config.toml.";
 
 fn send(request: &Request) -> Result<(), String> {

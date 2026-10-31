@@ -103,8 +103,6 @@ impl Daemon {
         let network_off = self.active.as_ref().is_some_and(|a| a.network);
         let whole_pc = f.target == Target::Network;
         let (direction, cgroups) = if whole_pc {
-            // Switching from one app to the whole PC drops that app's rules first.
-            nft::release()?;
             if !network_off {
                 network::off()?;
             }

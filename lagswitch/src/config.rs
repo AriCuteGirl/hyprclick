@@ -14,7 +14,7 @@ pub struct Config {
     pub direction: Direction,
     pub max_cap_ms: u64,
     pub last_app: Option<String>,
-    /// Turn off networking for the whole PC unless a command names an app.
+    /// Freeze the whole PC unless a command names an app.
     pub whole_pc: bool,
 }
 

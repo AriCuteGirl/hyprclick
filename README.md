@@ -101,8 +101,8 @@ It's locked to the exact target window and stops when that window goes away. It 
 
 Freezes your network with one key. There are two kinds of freeze:
 
-- **Whole PC**: turns networking off, then back on, like CirnoLag. Everything goes offline, and reconnecting adds a few seconds after the timer ends.
-- **One app**: stops one app's traffic while it keeps running and the rest of your PC stays online. You choose the app and direction (Both, Incoming, Outgoing).
+- **Whole PC**: everything on the PC loses its network at once, including calls. It comes back instantly when the freeze ends.
+- **One app**: the same for one app, while the rest of your PC stays online. You choose the app and direction (Both, Incoming, Outgoing).
 
 The three keys are ALT+Z, ALT+X and ALT+C by default:
 

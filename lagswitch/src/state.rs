@@ -11,7 +11,7 @@ pub struct Active {
     pub mode: Mode,
     pub direction: Direction,
     pub cgroups: Vec<String>,
-    /// Whole PC mode: networking is off and there are no rules.
+    /// Whole PC mode: everything is blocked and no cgroups are involved.
     pub network: bool,
     pub deadline: Instant,
 }

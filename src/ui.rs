@@ -778,7 +778,7 @@ impl App {
             segmented(ui, "lag_scope", &mut settings.whole_pc, &scopes);
             if settings.whole_pc {
                 ui.label(
-                    RichText::new("Turns networking off for everything on this PC, then back on. Reconnecting adds a few seconds after the timer ends.")
+                    RichText::new("Cuts everything on this PC off the network, including calls. It comes back instantly when the freeze ends.")
                         .color(pal().weak)
                         .size(11.0),
                 );

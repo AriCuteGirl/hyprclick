@@ -2,14 +2,17 @@
 
 A network freezer for Linux with two kinds of freeze:
 
-- **Whole PC:** turns NetworkManager's networking off, then back on. Everything on
-  the PC goes offline, including voice chat and streams.
-- **One app:** stops one app's traffic while it keeps running and the rest of your PC
-  stays online. Nothing is reset, so connections carry on when the freeze ends, as
-  long as the other side hasn't given up on you by then.
+- **Whole PC:** everything on the PC loses its network at once, as if it were unplugged,
+  including voice chat and streams. It comes back instantly when the freeze ends,
+  because the connection itself never went down.
+- **One app:** the same for one app, while it keeps running and the rest of your PC
+  stays online.
 
-Built on EndeavourOS with Hyprland and kernel 6.18. It needs systemd, cgroup v2 and
-nftables 1.0.8 or newer.
+Nothing is reset in either mode, so connections carry on when the freeze ends, as long
+as the other side hasn't given up on you by then.
+
+Built on EndeavourOS with Hyprland and kernel 6.18. It needs systemd, cgroup v2,
+nftables 1.0.8 or newer and iproute2.
 
 **Using this in online games can break their rules and get your account banned.**
 It can't hide anything from a game server.
@@ -38,7 +41,7 @@ lagswitch freeze --app org.example.App --ms 5000
 lagswitch toggle --app org.example.App
 lagswitch hold start --app org.example.App
 lagswitch hold stop
-lagswitch freeze --whole-pc --ms 5000           # the whole PC goes offline
+lagswitch freeze --whole-pc --ms 5000           # the whole PC loses its network
 lagswitch release                               # end any freeze now
 lagswitch status
 ```
@@ -107,11 +110,12 @@ everywhere, even typed without ALT.
 
 ### Whole PC
 
-The daemon runs `nmcli networking off`, then at the end `nmcli networking on`, and
-reconnects the Ethernet and Wi-Fi devices that were connected. NetworkManager keeps
-"off" across reboots, so a marker in `/var/lib/lagswitch` records that lagswitch did it.
-A crash or power cut mid-freeze is undone when the daemon next starts, and networking
-you turned off yourself is left alone.
+An `unreachable` routing rule at priority 1 makes every send fail straight away with
+`ENETUNREACH`, the same error an app gets with no network. It sits just after the local
+table, so loopback and the PC's own addresses keep working. A nft rule drops incoming
+packets. Interfaces and addresses stay up, so ending a freeze is instant: both rules are
+removed and there's nothing to reconnect. They don't survive a reboot, and the daemon
+clears any left over when it starts.
 
 ### One app
 
@@ -121,15 +125,13 @@ The daemon owns the rules and the timer, so a freeze still ends on time if the c
 dies. It will only freeze cgroups under your own `user.slice`, and it refuses ones
 shared with your whole session.
 
-All rules live in two tables named `lagswitch`, so your own firewall rules are never
+Rules live in one table named `lagswitch`, so your own firewall rules are never
 touched. They are swapped in and out as one atomic change:
 
 - **Incoming:** a rule in the input hook drops packets for the app's sockets using
   `socket cgroupv2`.
-- **Outgoing:** the output hook only marks the app's packets, and a netdev egress chain
-  drops them. Dropping in the output hook itself makes UDP `send()` fail with `EPERM`,
-  which the app can notice and treat as a network failure. This way `send()` succeeds
-  and the packets just vanish, like real packet loss.
+- **Outgoing:** a rule in the output hook drops the app's packets, which makes its UDP
+  `send()` fail straight away with `EPERM`, so the game sees its network fail.
 - **Loopback** isn't touched, so an app's local connections keep working.
 
 Rules are removed on normal exit, on SIGINT and SIGTERM, on panic, and when the daemon
@@ -137,10 +139,8 @@ starts. If the daemon is killed outright, systemd cleans up and restarts it.
 
 ## Limitations
 
-- **Whole PC takes extra time to come back.** Reconnecting and getting an address happens
-  after the timer ends, so the real freeze is longer than the time you set. The direction
-  setting doesn't apply. Devices NetworkManager doesn't manage, such as Docker bridges and
-  some VPNs, stay up. It needs NetworkManager.
+- **Whole PC blocks everything**, including voice chat, and the direction setting doesn't
+  apply to it. Traffic that's forwarded for VMs and containers is cut too.
 - **One app mode freezes whole cgroups.** Everything in a cgroup freezes together, and `lagswitch list`
   shows how many processes that is. Apps with no scope of their own sit in your login
   session and are marked `shared`, which can't be frozen. A game started by another
@@ -148,8 +148,6 @@ starts. If the daemon is killed outright, systemd cleans up and restarts it.
 - **Sockets count, not processes.** Traffic is matched by the cgroup a socket was created
   in. A socket passed to a process outside the cgroup still matches the original cgroup.
 - **Several instances.** Freezing an app ID freezes every running instance of it.
-- **Network devices** are listed when a freeze starts. One added during a freeze isn't
-  covered for outgoing traffic until the next freeze.
 - **Incoming-only freezes** can briefly slow other apps talking to the same server as the
   frozen app, and a fetch right after one can occasionally fail. Other servers weren't
   affected in testing and the cause isn't known. This wasn't seen with `both` or `out`.
@@ -173,7 +171,7 @@ default, or pass another app that isn't running):
 bash scripts/verify-daemon.sh org.kde.okular
 ```
 
-This one takes the whole PC offline several times:
+This one checks both modes and takes the whole PC offline several times:
 
 ```bash
 bash scripts/verify-whole-pc.sh

@@ -1,22 +1,9 @@
-//! Load scripts into nft and list the devices they apply to.
+//! Load scripts into nft.
 
-use std::fs;
 use std::io::{ErrorKind, Write};
 use std::process::{Command, Stdio};
 
 use crate::rules::{self, Direction};
-
-/// Network devices the egress chain hooks. Loopback stays out so local IPC keeps working.
-pub fn devices() -> Result<Vec<String>, String> {
-    let dir = fs::read_dir("/sys/class/net").map_err(|e| format!("can't list devices: {e}"))?;
-    let mut names: Vec<String> = dir
-        .flatten()
-        .filter_map(|e| e.file_name().into_string().ok())
-        .filter(|name| name != "lo")
-        .collect();
-    names.sort();
-    Ok(names)
-}
 
 fn load(script: &str) -> Result<(), String> {
     let mut child = Command::new("nft")
@@ -40,12 +27,11 @@ fn load(script: &str) -> Result<(), String> {
 }
 
 pub fn freeze(cgroups: &[String], direction: Direction) -> Result<(), String> {
-    let result = load(&rules::freeze_script(cgroups, direction, &devices()?));
-    match result {
-        // A device (a container's veth, say) vanished after we listed it.
-        Err(e) if e.contains("No such") => load(&rules::freeze_script(cgroups, direction, &devices()?)),
-        other => other,
-    }
+    load(&rules::freeze_script(cgroups, direction))
+}
+
+pub fn whole_pc() -> Result<(), String> {
+    load(&rules::whole_pc_script())
 }
 
 pub fn release() -> Result<(), String> {

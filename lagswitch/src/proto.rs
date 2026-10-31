@@ -17,7 +17,7 @@ pub const SOCKET: &str = "/run/lagswitch/sock";
 pub enum Target {
     App(String),
     Pid(u32),
-    /// Turn networking off for the whole PC.
+    /// Block all network traffic on the PC.
     Network,
 }
 
