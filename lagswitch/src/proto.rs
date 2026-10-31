@@ -7,7 +7,7 @@
 //!   release
 //!   status
 //!
-//! A target is app:<name> or pid:<n>. Replies start with "ok" or "err".
+//! A target is app:<name>, pid:<n> or network (the whole PC). Replies start with "ok" or "err".
 
 use crate::rules::Direction;
 
@@ -17,10 +17,15 @@ pub const SOCKET: &str = "/run/lagswitch/sock";
 pub enum Target {
     App(String),
     Pid(u32),
+    /// Turn networking off for the whole PC.
+    Network,
 }
 
 impl Target {
     fn parse(text: &str) -> Result<Self, String> {
+        if text == "network" {
+            return Ok(Self::Network);
+        }
         if let Some(name) = text.strip_prefix("app:") {
             if name.is_empty() {
                 return Err("empty app name".to_string());
@@ -37,6 +42,7 @@ impl Target {
         match self {
             Self::App(name) => format!("app:{name}"),
             Self::Pid(pid) => format!("pid:{pid}"),
+            Self::Network => "network".to_string(),
         }
     }
 }
@@ -143,6 +149,13 @@ mod tests {
             direction: Direction::Both,
             cap_ms: 30_000,
             target: Target::App("org.foo.Bar".to_string()),
+        }));
+        round_trip(Request::Freeze(FreezeRequest {
+            mode: Mode::Hold,
+            ms: None,
+            direction: Direction::Both,
+            cap_ms: 1000,
+            target: Target::Network,
         }));
         for mode in [Mode::Toggle, Mode::Hold] {
             round_trip(Request::Freeze(FreezeRequest {

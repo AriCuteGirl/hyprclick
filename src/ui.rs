@@ -757,7 +757,8 @@ impl App {
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     let frozen = matches!(live.status, lag::Status::Frozen { .. });
                     let label = if frozen { "Release" } else { "Freeze now" };
-                    let click = ui.add_enabled(!down && !settings.app.is_empty(), egui::Button::new(label)).clicked();
+                    let ready = settings.whole_pc || !settings.app.is_empty();
+                    let click = ui.add_enabled(!down && ready, egui::Button::new(label)).clicked();
                     if click {
                         // Same as pressing the timed key.
                         let args = if frozen { vec!["release"] } else { vec!["freeze"] };
@@ -773,20 +774,31 @@ impl App {
             }
 
             ui.separator();
-            ui.add(egui::TextEdit::singleline(&mut self.lag_filter).hint_text("Search apps").desired_width(f32::INFINITY));
-            let filter = self.lag_filter.to_lowercase();
-            egui::ScrollArea::vertical().id_salt("lag_apps").max_height(110.0).auto_shrink([false, true]).show(ui, |ui| {
-                for e in live.entries.iter().filter(|e| e.name.to_lowercase().contains(&filter)) {
-                    let selected = e.name == settings.app;
-                    let label = if e.processes > 1 { format!("{} ({})", e.name, e.processes) } else { e.name.clone() };
-                    let text = RichText::new(label).size(12.0).color(if e.is_flatpak { pal().text } else { pal().weak });
-                    let row = ui.add_enabled(e.freezable, egui::Button::selectable(selected, text));
-                    let row = row.on_disabled_hover_text("Shared with your whole session, so it can't be frozen alone");
-                    if row.clicked() {
-                        settings.app = e.name.clone();
+            let scopes = [(true, "Whole PC".to_string()), (false, "One app".to_string())];
+            segmented(ui, "lag_scope", &mut settings.whole_pc, &scopes);
+            if settings.whole_pc {
+                ui.label(
+                    RichText::new("Turns networking off for everything on this PC, then back on. Reconnecting adds a few seconds after the timer ends.")
+                        .color(pal().weak)
+                        .size(11.0),
+                );
+            } else {
+                ui.add(egui::TextEdit::singleline(&mut self.lag_filter).hint_text("Search apps").desired_width(f32::INFINITY));
+                let filter = self.lag_filter.to_lowercase();
+                egui::ScrollArea::vertical().id_salt("lag_apps").max_height(110.0).auto_shrink([false, true]).show(ui, |ui| {
+                    for e in live.entries.iter().filter(|e| e.name.to_lowercase().contains(&filter)) {
+                        let selected = e.name == settings.app;
+                        let label = if e.processes > 1 { format!("{} ({})", e.name, e.processes) } else { e.name.clone() };
+                        let text = RichText::new(label).size(12.0).color(if e.is_flatpak { pal().text } else { pal().weak });
+                        let row = ui.add_enabled(e.freezable, egui::Button::selectable(selected, text));
+                        let row = row.on_disabled_hover_text("Shared with your whole session, so it can't be frozen alone");
+                        if row.clicked() {
+                            settings.app = e.name.clone();
+                        }
                     }
-                }
-            });
+                });
+
+            }
 
             ui.separator();
             ui.horizontal(|ui| {
@@ -803,7 +815,9 @@ impl App {
                 (lag::Direction::In, "Incoming".to_string()),
                 (lag::Direction::Out, "Outgoing".to_string()),
             ];
-            segmented(ui, "lag_dir", &mut settings.direction, &directions);
+            if !settings.whole_pc {
+                segmented(ui, "lag_dir", &mut settings.direction, &directions);
+            }
 
             ui.separator();
             let keys = [

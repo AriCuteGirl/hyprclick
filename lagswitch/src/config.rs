@@ -14,6 +14,8 @@ pub struct Config {
     pub direction: Direction,
     pub max_cap_ms: u64,
     pub last_app: Option<String>,
+    /// Turn off networking for the whole PC unless a command names an app.
+    pub whole_pc: bool,
 }
 
 impl Default for Config {
@@ -23,6 +25,7 @@ impl Default for Config {
             direction: Direction::Both,
             max_cap_ms: timer::DEFAULT_CAP_MS,
             last_app: None,
+            whole_pc: false,
         }
     }
 }
@@ -59,6 +62,10 @@ impl Config {
                     config.direction = Direction::parse(text_value(value)).map_err(|e| format!("{}: {e}", at()))?;
                 }
                 "last_app" => config.last_app = Some(text_value(value).to_string()),
+                "whole_pc" => {
+                    config.whole_pc =
+                        value.parse().map_err(|_| format!("{}: whole_pc must be true or false", at()))?;
+                }
                 other => return Err(format!("{}: unknown setting \"{other}\"", at())),
             }
         }
@@ -67,10 +74,11 @@ impl Config {
 
     pub fn render(&self) -> String {
         let mut text = format!(
-            "default_ms = {}\ndirection = \"{}\"\nmax_cap_ms = {}\n",
+            "default_ms = {}\ndirection = \"{}\"\nmax_cap_ms = {}\nwhole_pc = {}\n",
             self.default_ms,
             self.direction.name(),
-            self.max_cap_ms
+            self.max_cap_ms,
+            self.whole_pc
         );
         if let Some(app) = &self.last_app {
             text.push_str(&format!("last_app = \"{app}\"\n"));
@@ -114,6 +122,7 @@ mod tests {
             direction: Direction::Out,
             max_cap_ms: 10_000,
             last_app: Some("org.foo.Bar".to_string()),
+            whole_pc: true,
         };
         assert_eq!(Config::parse(&config.render()), Ok(config));
     }
@@ -128,6 +137,7 @@ mod tests {
     fn reports_bad_lines() {
         assert!(Config::parse("default_ms = soon").unwrap_err().contains("line 1"));
         assert!(Config::parse("\ndirection = \"up\"").unwrap_err().contains("line 2"));
+        assert!(Config::parse("whole_pc = maybe").unwrap_err().contains("true or false"));
         assert!(Config::parse("colour = 3").unwrap_err().contains("unknown"));
         assert!(Config::parse("nonsense").unwrap_err().contains("key = value"));
     }

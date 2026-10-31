@@ -1,9 +1,12 @@
 # lagswitch
 
-A per-app network freezer for Linux. Pick a running app and its network traffic
-stops for as long as you choose, while the app keeps running and the rest of your
-PC stays online. Nothing is reset, so connections carry on when the freeze ends,
-as long as the other side hasn't given up on you by then.
+A network freezer for Linux with two kinds of freeze:
+
+- **Whole PC:** turns NetworkManager's networking off, then back on. Everything on
+  the PC goes offline, including voice chat and streams.
+- **One app:** stops one app's traffic while it keeps running and the rest of your PC
+  stays online. Nothing is reset, so connections carry on when the freeze ends, as
+  long as the other side hasn't given up on you by then.
 
 Built on EndeavourOS with Hyprland and kernel 6.18. It needs systemd, cgroup v2 and
 nftables 1.0.8 or newer.
@@ -35,11 +38,12 @@ lagswitch freeze --app org.example.App --ms 5000
 lagswitch toggle --app org.example.App
 lagswitch hold start --app org.example.App
 lagswitch hold stop
+lagswitch freeze --whole-pc --ms 5000           # the whole PC goes offline
 lagswitch release                               # end any freeze now
 lagswitch status
 ```
 
-`--app` takes a Flatpak app ID, part of one, or an exact process name. `--pid` takes
+`--whole-pc` also works with `toggle` and `hold start`. `--app` takes a Flatpak app ID, part of one, or an exact process name. `--pid` takes
 a process ID. Add `--dir in`, `--dir out` or `--dir both` (the default) to choose a
 direction, and `--cap-ms N` to change the failsafe for that freeze.
 
@@ -54,13 +58,15 @@ than 5 minutes whatever the config says.
 
 ## Config
 
-`~/.config/lagswitch/config.toml`. Without `--app` or `--pid`, the last app is used,
-which keeps keybinds short.
+`~/.config/lagswitch/config.toml`. With no target named, a command uses the saved
+choice, which keeps keybinds short: the whole PC if `whole_pc` is true, otherwise the
+last app.
 
 ```toml
 default_ms = 5000
 direction = "both"
 max_cap_ms = 30000
+whole_pc = false
 last_app = "org.example.App"
 ```
 
@@ -99,6 +105,16 @@ everywhere, even typed without ALT.
 
 ## How it works
 
+### Whole PC
+
+The daemon runs `nmcli networking off`, then at the end `nmcli networking on`, and
+reconnects the Ethernet and Wi-Fi devices that were connected. NetworkManager keeps
+"off" across reboots, so a marker in `/var/lib/lagswitch` records that lagswitch did it.
+A crash or power cut mid-freeze is undone when the daemon next starts, and networking
+you turned off yourself is left alone.
+
+### One app
+
 Changing firewall rules needs root, so `lagswitchd` runs as a small root service and
 everything else talks to it over `/run/lagswitch/sock`, which only your user can open.
 The daemon owns the rules and the timer, so a freeze still ends on time if the client
@@ -121,7 +137,11 @@ starts. If the daemon is killed outright, systemd cleans up and restarts it.
 
 ## Limitations
 
-- **Whole cgroups only.** Everything in a cgroup freezes together, and `lagswitch list`
+- **Whole PC takes extra time to come back.** Reconnecting and getting an address happens
+  after the timer ends, so the real freeze is longer than the time you set. The direction
+  setting doesn't apply. Devices NetworkManager doesn't manage, such as Docker bridges and
+  some VPNs, stay up. It needs NetworkManager.
+- **One app mode freezes whole cgroups.** Everything in a cgroup freezes together, and `lagswitch list`
   shows how many processes that is. Apps with no scope of their own sit in your login
   session and are marked `shared`, which can't be frozen. A game started by another
   program can share that program's cgroup, and then both freeze.
@@ -151,6 +171,12 @@ default, or pass another app that isn't running):
 
 ```bash
 bash scripts/verify-daemon.sh org.kde.okular
+```
+
+This one takes the whole PC offline several times:
+
+```bash
+bash scripts/verify-whole-pc.sh
 ```
 
 ```bash

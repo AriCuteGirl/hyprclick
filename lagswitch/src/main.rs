@@ -10,17 +10,17 @@ use lagswitch::config::Config;
 
 const USAGE: &str = "usage:
   lagswitch list [FILTER]
-  lagswitch freeze [--app NAME | --pid PID] [--ms N] [--dir in|out|both] [--cap-ms N]
-  lagswitch toggle [--app NAME | --pid PID] [--dir in|out|both] [--cap-ms N]
-  lagswitch hold start [--app NAME | --pid PID] [--dir in|out|both] [--cap-ms N]
+  lagswitch freeze [--whole-pc | --app NAME | --pid PID] [--ms N] [--dir in|out|both] [--cap-ms N]
+  lagswitch toggle [--whole-pc | --app NAME | --pid PID] [--dir in|out|both] [--cap-ms N]
+  lagswitch hold start [--whole-pc | --app NAME | --pid PID] [--dir in|out|both] [--cap-ms N]
   lagswitch hold stop
   lagswitch release
   lagswitch status
   lagswitch config
-  lagswitch set [--app NAME] [--ms N] [--dir in|out|both] [--cap-ms N]
+  lagswitch set [--whole-pc true|false] [--app NAME] [--ms N] [--dir in|out|both] [--cap-ms N]
 
-Without --app or --pid the last app is used; other defaults come from
-~/.config/lagswitch/config.toml.";
+--whole-pc turns networking off for the whole PC. With no target named, the
+saved choice is used; defaults come from ~/.config/lagswitch/config.toml.";
 
 fn send(request: &Request) -> Result<(), String> {
     let mut stream = UnixStream::connect(SOCKET).map_err(|e| match e.kind() {
@@ -57,11 +57,13 @@ fn freeze_request(
     config: &Config,
 ) -> Result<Request, String> {
     let (mut app, mut pid) = (None, None);
+    let mut whole_pc = false;
     let mut ms = config.default_ms;
     let mut direction = config.direction;
     let mut cap_ms = config.max_cap_ms;
     while let Some(flag) = args.next() {
         match flag.as_str() {
+            "--whole-pc" => whole_pc = true,
             "--app" => app = Some(args.next().ok_or("--app needs a name")?),
             "--pid" => pid = Some(number(args.next(), "--pid")? as u32),
             "--ms" if mode == Mode::Timed => ms = number(args.next(), "--ms")?,
@@ -71,10 +73,12 @@ fn freeze_request(
         }
     }
     let target = match (app, pid) {
+        (None, None) if whole_pc || config.whole_pc => Target::Network,
+        _ if whole_pc => return Err("give only one of --whole-pc, --app or --pid".to_string()),
         (Some(name), None) => Target::App(name),
         (None, Some(pid)) => Target::Pid(pid),
         (None, None) => Target::App(config.last_app.clone().ok_or(
-            "no app chosen yet, pick one with --app NAME (see lagswitch list)",
+            "no app chosen yet, pick one with --app NAME (see lagswitch list) or use --whole-pc",
         )?),
         _ => return Err("give either --app or --pid".to_string()),
     };
@@ -124,6 +128,10 @@ fn set(mut args: impl Iterator<Item = String>) -> Result<(), String> {
     let mut config = Config::load()?;
     while let Some(flag) = args.next() {
         match flag.as_str() {
+            "--whole-pc" => {
+                let value = args.next().ok_or("--whole-pc needs true or false")?;
+                config.whole_pc = value.parse().map_err(|_| "--whole-pc needs true or false")?;
+            }
             "--app" => config.last_app = Some(args.next().ok_or("--app needs a name")?),
             "--ms" => config.default_ms = number(args.next(), "--ms")?,
             "--dir" => config.direction = Direction::parse(&args.next().ok_or("--dir needs a value")?)?,

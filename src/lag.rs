@@ -72,6 +72,7 @@ pub struct Settings {
     pub direction: Direction,
     pub cap_seconds: f32,
     pub app: String,
+    pub whole_pc: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -92,7 +93,7 @@ impl Direction {
 }
 
 fn parse_settings(text: &str) -> Settings {
-    let mut s = Settings { seconds: 1.5, direction: Direction::Both, cap_seconds: 30.0, app: String::new() };
+    let mut s = Settings { seconds: 1.5, direction: Direction::Both, cap_seconds: 30.0, app: String::new(), whole_pc: false };
     for line in text.lines() {
         let Some((key, value)) = line.split_once('=') else { continue };
         let value = value.trim().trim_matches('"');
@@ -107,6 +108,7 @@ fn parse_settings(text: &str) -> Settings {
                 }
             }
             "last_app" => s.app = value.to_string(),
+            "whole_pc" => s.whole_pc = value == "true",
             _ => {}
         }
     }
@@ -124,7 +126,8 @@ pub fn load_settings() -> Settings {
 /// Saved where the keybinds read it, so changing these needs no rebind.
 pub fn save_settings(s: &Settings) -> Result<(), String> {
     let (ms, cap) = (to_ms(s.seconds), to_ms(s.cap_seconds));
-    let mut args = vec!["set", "--ms", &ms, "--dir", s.direction.name(), "--cap-ms", &cap];
+    let whole_pc = if s.whole_pc { "true" } else { "false" };
+    let mut args = vec!["set", "--whole-pc", whole_pc, "--ms", &ms, "--dir", s.direction.name(), "--cap-ms", &cap];
     if !s.app.is_empty() {
         args.extend(["--app", &s.app]);
     }
@@ -227,8 +230,8 @@ mod tests {
 
     #[test]
     fn reads_settings() {
-        let s = parse_settings("default_ms = 5000\ndirection = \"out\"\nmax_cap_ms = 10000\nlast_app = \"org.foo\"\n");
-        assert_eq!(s, Settings { seconds: 5.0, direction: Direction::Out, cap_seconds: 10.0, app: "org.foo".into() });
+        let s = parse_settings("default_ms = 5000\ndirection = \"out\"\nmax_cap_ms = 10000\nlast_app = \"org.foo\"\nwhole_pc = true\n");
+        assert_eq!(s, Settings { seconds: 5.0, direction: Direction::Out, cap_seconds: 10.0, app: "org.foo".into(), whole_pc: true });
     }
 
     #[test]

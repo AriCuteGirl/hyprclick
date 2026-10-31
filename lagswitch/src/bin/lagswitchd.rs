@@ -13,14 +13,15 @@ use std::time::{Duration, Instant};
 
 use lagswitch::proto::{FreezeRequest, Request, SOCKET, Target};
 use lagswitch::state::{self, Active, Decision};
-use lagswitch::{cgroup, nft};
+use lagswitch::rules::Direction;
+use lagswitch::{cgroup, network, nft};
 
 /// Removes the rules however the daemon ends, including by panic.
 struct Cleanup;
 
 impl Drop for Cleanup {
     fn drop(&mut self) {
-        if let Err(e) = nft::release() {
+        if let Err(e) = network::release_all() {
             eprintln!("lagswitchd: cleanup failed: {e}");
         }
     }
@@ -87,6 +88,7 @@ struct Daemon {
 impl Daemon {
     fn resolve(&self, target: &Target) -> Result<Vec<String>, String> {
         let cgroups = match target {
+            Target::Network => return Err("the whole PC has no cgroup".to_string()),
             Target::App(name) => cgroup::resolve_app(name, self.uid)?,
             Target::Pid(pid) => vec![cgroup::of_pid(*pid)?],
         };
@@ -98,19 +100,35 @@ impl Daemon {
     }
 
     fn freeze(&mut self, f: &FreezeRequest, length: Duration) -> Result<(), String> {
-        let cgroups = self.resolve(&f.target)?;
-        nft::freeze(&cgroups, f.direction)?;
+        let network_off = self.active.as_ref().is_some_and(|a| a.network);
+        let whole_pc = f.target == Target::Network;
+        let (direction, cgroups) = if whole_pc {
+            // Switching from one app to the whole PC drops that app's rules first.
+            nft::release()?;
+            if !network_off {
+                network::off()?;
+            }
+            (Direction::Both, Vec::new())
+        } else {
+            let cgroups = self.resolve(&f.target)?;
+            if network_off {
+                network::restore()?;
+            }
+            nft::freeze(&cgroups, f.direction)?;
+            (f.direction, cgroups)
+        };
         self.active = Some(Active {
             mode: f.mode,
-            direction: f.direction,
+            direction,
             cgroups,
+            network: whole_pc,
             deadline: Instant::now() + length,
         });
         Ok(())
     }
 
     fn release(&mut self) -> Result<(), String> {
-        nft::release()?;
+        network::release_all()?;
         self.active = None;
         Ok(())
     }
@@ -123,7 +141,7 @@ impl Daemon {
                 a.mode.name(),
                 a.direction.name(),
                 state::millis_until(a.deadline, Instant::now()),
-                a.cgroups.join(",")
+                if a.network { "network".to_string() } else { a.cgroups.join(",") }
             ),
         }
     }
@@ -206,7 +224,7 @@ fn run() -> Result<(), String> {
     let mut uid = None;
     while let Some(flag) = args.next() {
         match flag.as_str() {
-            "--release" => return nft::release(),
+            "--release" => return network::release_all(),
             "--uid" => {
                 let value = args.next().ok_or("--uid needs a value")?;
                 uid = Some(value.parse().map_err(|_| format!("bad uid \"{value}\""))?);
@@ -219,8 +237,8 @@ fn run() -> Result<(), String> {
     if unsafe { libc::geteuid() } != 0 {
         return Err("not root".to_string());
     }
-    // Rules left behind by a crash.
-    nft::release()?;
+    // Whatever a crash or power cut left behind.
+    network::release_all()?;
     let cleanup = Cleanup;
     let signals = signal_fd()?;
     let listener = listen(uid)?;

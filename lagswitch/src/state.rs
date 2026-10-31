@@ -11,6 +11,8 @@ pub struct Active {
     pub mode: Mode,
     pub direction: Direction,
     pub cgroups: Vec<String>,
+    /// Whole PC mode: networking is off and there are no rules.
+    pub network: bool,
     pub deadline: Instant,
 }
 
@@ -66,7 +68,7 @@ mod tests {
     }
 
     fn active(mode: Mode) -> Active {
-        Active { mode, direction: Direction::Both, cgroups: vec![], deadline: Instant::now() }
+        Active { mode, direction: Direction::Both, cgroups: vec![], network: false, deadline: Instant::now() }
     }
 
     #[test]

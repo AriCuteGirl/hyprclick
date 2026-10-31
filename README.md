@@ -9,7 +9,7 @@ Background autoclicker for **Hyprland** and **KDE Plasma**, written in Rust with
 | Anti-AFK: Window | yes | no |
 | Anti-AFK: Gamepad | yes | yes |
 | Hotkey from `hyprclick setup` / Key tab | Hyprland bind (keys + mouse buttons) | KDE global shortcut (keys only) |
-| Lag tab (freeze one app's network) | yes | no |
+| Lag tab (freeze the network) | yes | no |
 
  The window takes its colors and font from the Noctalia rice (`~/.config/noctalia/rice.toml` → `palettes/<custom_palette>.json`), with the Ari palette built in as a fallback.
 
@@ -99,7 +99,12 @@ It's locked to the exact target window and stops when that window goes away. It 
 
 ## Lag
 
-Freezes one app's network while it keeps running and the rest of your PC stays online, like CirnoLag on Windows. The tab has an app picker, duration, direction (Both, Incoming, Outgoing) and three keys, ALT+Z, ALT+X and ALT+C by default:
+Freezes your network with one key. There are two kinds of freeze:
+
+- **Whole PC**: turns networking off, then back on, like CirnoLag. Everything goes offline, and reconnecting adds a few seconds after the timer ends.
+- **One app**: stops one app's traffic while it keeps running and the rest of your PC stays online. You choose the app and direction (Both, Incoming, Outgoing).
+
+The three keys are ALT+Z, ALT+X and ALT+C by default:
 
 - **Timed**: press once, it freezes for the set time. Press again to end it early.
 - **Toggle**: press to freeze, press again to stop.

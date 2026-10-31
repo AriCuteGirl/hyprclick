@@ -1,5 +1,6 @@
 pub mod cgroup;
 pub mod config;
+pub mod network;
 pub mod nft;
 pub mod proto;
 pub mod rules;
