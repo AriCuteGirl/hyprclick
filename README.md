@@ -9,6 +9,7 @@ Background autoclicker for **Hyprland** and **KDE Plasma**, written in Rust with
 | Anti-AFK: Window | yes | no |
 | Anti-AFK: Gamepad | yes | yes |
 | Hotkey from `hyprclick setup` / Key tab | Hyprland bind (keys + mouse buttons) | KDE global shortcut (keys only) |
+| Lag tab (freeze one app's network) | yes | no |
 
  The window takes its colors and font from the Noctalia rice (`~/.config/noctalia/rice.toml` → `palettes/<custom_palette>.json`), with the Ari palette built in as a fallback.
 
@@ -96,6 +97,26 @@ Every few minutes (default 10) it pokes the target window, so Roblox doesn't kic
 
 It's locked to the exact target window and stops when that window goes away. It runs from the app's AFK tab, or in a terminal with caffeine-style output: `hyprclick afk`.
 
+## Lag
+
+Freezes one app's network while it keeps running and the rest of your PC stays online, like CirnoLag on Windows. The tab has an app picker, duration, direction (Both, Incoming, Outgoing) and three keys, ALT+Z, ALT+X and ALT+C by default:
+
+- **Timed**: press once, it freezes for the set time. Press again to end it early.
+- **Toggle**: press to freeze, press again to stop.
+- **Hold**: frozen while the key is down.
+
+Every mode stops at the Max setting, 30 seconds by default.
+
+Changing firewall rules needs root, so this runs through [lagswitch](lagswitch/README.md), a small root service with its own install step. hyprclick itself never needs root and works normally without it:
+
+```bash
+cd lagswitch
+bash scripts/install.sh
+hyprclick setup
+```
+
+**Using this in online games can break their rules and get your account banned.** Its limits are listed in the [lagswitch README](lagswitch/README.md#limitations).
+
 ## Hotkey
 
 On KDE, see [KDE Plasma](#kde-plasma). On Hyprland, `hyprclick setup` writes the toggle hotkey and the small floating-window rule into `~/.config/hypr/hyprclick.lua` (or `hyprclick.conf` on the classic config). It adds one line to `hyprland.lua`/`hyprland.conf` to load it (with a backup), then reloads Hyprland. Change it from the app's Key tab by pressing the new combo (side mouse buttons work), or with `hyprclick setup 'ALT + J'`, `'CTRL + SHIFT + G'`, `'mouse:275'` (back), `'ALT + mouse:276'`.
@@ -119,6 +140,8 @@ XWayland details (Sober is XWayland):
 - Xwayland hit-tests by X stacking order, and windows on other workspaces overlap in X coordinates, so the target is raised in X (not on screen) before clicking.
 
 ## Build
+
+lagswitch has its own crate in `lagswitch/`, built separately by its install script.
 
 ```
 cargo build --release && install -m755 target/release/hyprclick ~/.local/bin/

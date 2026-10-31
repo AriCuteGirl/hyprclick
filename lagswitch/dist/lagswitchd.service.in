@@ -1,0 +1,21 @@
+[Unit]
+Description=lagswitch per-app network freeze daemon
+After=network-pre.target
+
+[Service]
+ExecStart=/usr/local/bin/lagswitchd --uid @UID@
+# Still removes the rules if the daemon is killed outright.
+ExecStopPost=/usr/local/bin/lagswitchd --release
+Restart=on-failure
+RestartSec=1
+RuntimeDirectory=lagswitch
+RuntimeDirectoryMode=0755
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_CHOWN CAP_FOWNER
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+RestrictAddressFamilies=AF_UNIX AF_NETLINK
+
+[Install]
+WantedBy=multi-user.target

@@ -10,9 +10,10 @@
 //! Shortcuts), a KWin window rule for the size, and an XDG autostart entry
 //! for the pad service.
 
+use crate::config::Config;
 use crate::desktop::{self, Desktop};
 use crate::hotkey::Hotkey;
-use crate::{hypr, kde, APP_ID};
+use crate::{hypr, kde, lag, APP_ID};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -31,26 +32,27 @@ fn exe() -> String {
 
 /// Binds the hotkey (and window rule, pad autostart) and returns a short
 /// report (plus any warnings).
-pub fn apply(hotkey: &Hotkey) -> Result<String, String> {
+pub fn apply(cfg: &Config) -> Result<String, String> {
     match desktop::get() {
-        Desktop::Hyprland => apply_hyprland(hotkey),
-        Desktop::Kde => apply_kde(hotkey),
+        Desktop::Hyprland => apply_hyprland(cfg),
+        Desktop::Kde => apply_kde(&cfg.hotkey),
     }
 }
 
 /// Writes the managed file, makes sure Hyprland loads it and reloads.
-fn apply_hyprland(hotkey: &Hotkey) -> Result<String, String> {
+fn apply_hyprland(cfg: &Config) -> Result<String, String> {
+    let hotkey = &cfg.hotkey;
     let dir = hypr_dir();
     let lua = dir.join("hyprland.lua");
     let conf = dir.join("hyprland.conf");
     let (managed, main) = if lua.exists() {
         let file = dir.join("hyprclick.lua");
-        std::fs::write(&file, lua_file(hotkey)).map_err(|e| e.to_string())?;
-        ensure_line(&lua, "require(\"hyprclick\")", "\n-- hyprclick (added by `hyprclick setup`)\npcall(require, \"hyprclick\")\n")?;
+        std::fs::write(&file, lua_file(cfg)).map_err(|e| e.to_string())?;
+        ensure_line(&lua, "\"hyprclick\")", "\n-- hyprclick (added by `hyprclick setup`)\npcall(require, \"hyprclick\")\n")?;
         (file, lua)
     } else if conf.exists() {
         let file = dir.join("hyprclick.conf");
-        std::fs::write(&file, conf_file(hotkey, true)).map_err(|e| e.to_string())?;
+        std::fs::write(&file, conf_file(cfg, true)).map_err(|e| e.to_string())?;
         ensure_line(&conf, "hyprclick.conf", "\n# hyprclick (added by `hyprclick setup`)\nsource = ~/.config/hypr/hyprclick.conf\n")?;
         (file, conf)
     } else {
@@ -64,7 +66,7 @@ fn apply_hyprland(hotkey: &Hotkey) -> Result<String, String> {
         // Window rule syntax differs between Hyprland versions; the bind is
         // what matters, so retry without the rules before giving up.
         if managed.extension().is_some_and(|e| e == "conf") {
-            std::fs::write(&managed, conf_file(hotkey, false)).map_err(|e| e.to_string())?;
+            std::fs::write(&managed, conf_file(cfg, false)).map_err(|e| e.to_string())?;
             hypr::request("reload")?;
             let errors = hypr::request("configerrors").unwrap_or_default();
             if !errors.lines().any(|l| l.contains("hyprclick")) {
@@ -78,6 +80,14 @@ fn apply_hyprland(hotkey: &Hotkey) -> Result<String, String> {
     let _ = crate::afk::ensure_pad_service();
 
     let mut report = format!("{} → hyprclick toggle  ({})", hotkey.label(), managed.display());
+    if lag::installed() {
+        report += &format!(
+            "\nlagswitch: {} timed, {} toggle, {} hold",
+            cfg.lag_timed_key.label(),
+            cfg.lag_toggle_key.label(),
+            cfg.lag_hold_key.label()
+        );
+    }
     let dupes = other_binds(&dir, &managed, &main);
     if !dupes.is_empty() {
         report += &format!("\nalso bound in: {} (remove those lines)", dupes.join(", "));
@@ -202,9 +212,10 @@ fn kde_autostart(exe: &str) -> Result<(), String> {
     .map_err(|e| e.to_string())
 }
 
-fn lua_file(hk: &Hotkey) -> String {
+fn lua_file(cfg: &Config) -> String {
+    let hk = &cfg.hotkey;
     let (w, h) = WINDOW_SIZE;
-    format!(
+    let mut out = format!(
         "-- Managed by hyprclick: change the key in its Key tab, or run: hyprclick setup \"ALT + J\"\n\
          -- (edits here get overwritten)\n\n\
          hl.bind(\"{combo}\", hl.dsp.exec_cmd(\"{exe} toggle\"), {{ description = \"hyprclick: Toggle autoclicker\" }})\n\n\
@@ -215,10 +226,74 @@ fn lua_file(hk: &Hotkey) -> String {
          hl.on(\"hyprland.start\", function() hl.exec_cmd(\"{exe} pad\") end)\n",
         combo = hk.combo(),
         exe = exe(),
-    )
+    );
+    if lag::installed() {
+        out += &lua_lag_binds(cfg, lag::CLI);
+    }
+    out
 }
 
-fn conf_file(hk: &Hotkey, rules: bool) -> String {
+/// Modifier keys of the hold combo with the mods still held as they come up,
+/// so the hold also ends when a modifier is let go before the key. Never use
+/// ignore_mods on the key's own release bind: Hyprland then swallows that
+/// letter everywhere, even typed without the modifier.
+fn lag_mod_releases(hold: &Hotkey) -> Vec<(String, String)> {
+    let mut found = Vec::new();
+    for name in &hold.mods {
+        let side = match name.as_str() {
+            "ALT" => "Alt",
+            "CTRL" => "Control",
+            "SHIFT" => "Shift",
+            _ => "Super",
+        };
+        for end in ["L", "R"] {
+            found.push((hold.mods.join(" "), format!("{side}_{end}")));
+        }
+    }
+    found
+}
+
+/// Timed, toggle and hold.
+fn lua_lag_binds(cfg: &Config, cli: &str) -> String {
+    let mut out = format!(
+        "\n-- lagswitch: app, duration and direction come from its config (hyprclick's Lag tab).\n\
+         hl.bind(\"{timed}\", hl.dsp.exec_cmd(\"{cli} freeze\"), {{ description = \"lagswitch: Timed freeze\" }})\n\
+         hl.bind(\"{toggle}\", hl.dsp.exec_cmd(\"{cli} toggle\"), {{ description = \"lagswitch: Toggle freeze\" }})\n\
+         hl.bind(\"{hold}\", hl.dsp.exec_cmd(\"{cli} hold start\"), {{ description = \"lagswitch: Hold to freeze\" }})\n\
+         hl.bind(\"{hold}\", hl.dsp.exec_cmd(\"{cli} hold stop\"), {{ release = true, description = \"lagswitch: Release hold\" }})\n",
+        timed = cfg.lag_timed_key.combo(),
+        toggle = cfg.lag_toggle_key.combo(),
+        hold = cfg.lag_hold_key.combo(),
+    );
+    for (mods, key) in lag_mod_releases(&cfg.lag_hold_key) {
+        let combo = mods.split(' ').chain([key.as_str()]).collect::<Vec<_>>().join(" + ");
+        out += &format!(
+            "hl.bind(\"{combo}\", hl.dsp.exec_cmd(\"{cli} hold stop\"), {{ release = true, non_consuming = true, description = \"lagswitch: Release hold\" }})\n"
+        );
+    }
+    out
+}
+
+fn conf_lag_binds(cfg: &Config, cli: &str) -> String {
+    let parts = |k: &Hotkey| format!("{}, {}", k.mods.join(" "), k.key);
+    let mut out = format!(
+        "\n# lagswitch: app, duration and direction come from its config (hyprclick's Lag tab).\n\
+         bind = {timed}, exec, {cli} freeze\n\
+         bind = {toggle}, exec, {cli} toggle\n\
+         bind = {hold}, exec, {cli} hold start\n\
+         bindr = {hold}, exec, {cli} hold stop\n",
+        timed = parts(&cfg.lag_timed_key),
+        toggle = parts(&cfg.lag_toggle_key),
+        hold = parts(&cfg.lag_hold_key),
+    );
+    for (mods, key) in lag_mod_releases(&cfg.lag_hold_key) {
+        out += &format!("bindrn = {mods}, {key}, exec, {cli} hold stop\n");
+    }
+    out
+}
+
+fn conf_file(cfg: &Config, rules: bool) -> String {
+    let hk = &cfg.hotkey;
     let (w, h) = WINDOW_SIZE;
     let mut out = format!(
         "# Managed by hyprclick: change the key in its Key tab, or run: hyprclick setup \"ALT + J\"\n\
@@ -233,6 +308,9 @@ fn conf_file(hk: &Hotkey, rules: bool) -> String {
         out += &format!(
             "\nwindowrule = float, class:^({APP_ID})$\nwindowrule = size {w} {h}, class:^({APP_ID})$\nwindowrule = center, class:^({APP_ID})$\n"
         );
+    }
+    if lag::installed() {
+        out += &conf_lag_binds(cfg, lag::CLI);
     }
     out
 }
@@ -277,4 +355,32 @@ fn other_binds(dir: &Path, managed: &Path, main: &Path) -> Vec<String> {
         }
     }
     found
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cfg() -> Config {
+        Config {
+            lag_timed_key: Hotkey { mods: vec!["ALT".into()], key: "Z".into() },
+            lag_toggle_key: Hotkey { mods: vec!["ALT".into()], key: "X".into() },
+            lag_hold_key: Hotkey { mods: vec!["ALT".into()], key: "C".into() },
+            ..serde_json::from_str("{}").unwrap()
+        }
+    }
+
+    #[test]
+    fn lag_binds_never_swallow_a_plain_letter() {
+        assert!(!lua_lag_binds(&cfg(), "x").contains("ignore_mods"));
+        assert!(!conf_lag_binds(&cfg(), "x").contains("bindri"));
+    }
+
+    #[test]
+    fn hold_also_ends_when_the_modifier_comes_up() {
+        let lua = lua_lag_binds(&cfg(), "x");
+        assert!(lua.contains("hl.bind(\"ALT + Alt_L\""));
+        assert!(lua.contains("hl.bind(\"ALT + Alt_R\""));
+        assert!(conf_lag_binds(&cfg(), "x").contains("bindrn = ALT, Alt_L, exec, x hold stop"));
+    }
 }
