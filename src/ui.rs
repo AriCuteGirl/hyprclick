@@ -2,7 +2,7 @@ use crate::config::{AfkAction, AfkMethod, Config, Mode, MouseButton, MAX_CPS};
 use crate::controller::{fmt_cps, Controller};
 use crate::hotkey::Hotkey;
 use crate::desktop::{self, Client, Desktop};
-use crate::{afk, hypr, ipc, setup, theme, APP_ID};
+use crate::{afk, hypr, ipc, lag, setup, theme, APP_ID};
 use eframe::egui::{
     self, pos2, vec2, Align, Align2, Color32, CornerRadius, FontData, FontDefinitions, FontFamily,
     FontId, Layout, Margin, Rect, RichText, Sense, Stroke, StrokeKind, Ui,
@@ -25,6 +25,7 @@ const I_HEART: &str = "\u{f004}";
 const I_BOLT: &str = "\u{f0e7}";
 const I_COFFEE: &str = "\u{f0f4}";
 const I_KEY: &str = "\u{f084}";
+const I_LAG: &str = "\u{f2dc}";
 const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
 const PICK_SECS: f32 = 3.0;
@@ -45,6 +46,16 @@ enum Tab {
     Click,
     Afk,
     Key,
+    Lag,
+}
+
+/// Which key the next press gets recorded for.
+#[derive(Clone, Copy, PartialEq)]
+enum KeyFor {
+    Click,
+    LagTimed,
+    LagToggle,
+    LagHold,
 }
 
 struct App {
@@ -64,9 +75,14 @@ struct App {
     afk_key: String,
     afk_err: Option<String>,
     /// Waiting for the next key/mouse press to become the hotkey.
-    recording: Option<Instant>,
+    recording: Option<(KeyFor, Instant)>,
     key_text: String,
     key_msg: Option<(bool, String)>,
+    lag: lag::Monitor,
+    lag_settings: Option<lag::Settings>,
+    lag_saved: Option<lag::Settings>,
+    lag_filter: String,
+    lag_msg: Option<String>,
 }
 
 pub fn run() {
@@ -131,6 +147,11 @@ impl App {
             recording: None,
             key_text: String::new(),
             key_msg: None,
+            lag: lag::Monitor::new(),
+            lag_settings: None,
+            lag_saved: None,
+            lag_filter: String::new(),
+            lag_msg: None,
         }
     }
 
@@ -184,7 +205,7 @@ impl App {
             }
         }
 
-        if let Some(since) = self.recording {
+        if let Some((target, since)) = self.recording {
             // Skip the click that started recording.
             if since.elapsed() > Duration::from_millis(250) {
                 for ev in ctx.input(|i| i.events.clone()) {
@@ -199,8 +220,7 @@ impl App {
                     };
                     if let Some(hk) = hk {
                         self.recording = None;
-                        c.cfg.hotkey = hk;
-                        self.apply_hotkey(c);
+                        self.record_key(c, target, hk);
                         break;
                     }
                 }
@@ -251,18 +271,22 @@ impl eframe::App for App {
                             self.mode_card(ui, &mut c);
                             // Settings share one spot so the window never
                             // needs scrolling.
-                            let tabs = [
+                            let mut tabs = vec![
                                 (Tab::Target, format!("{I_TARGET} Target")),
                                 (Tab::Click, format!("{I_BOLT} Click")),
                                 (Tab::Afk, format!("{I_COFFEE} AFK")),
                                 (Tab::Key, format!("{I_KEY} Key")),
                             ];
+                            if desktop::get() == Desktop::Hyprland {
+                                tabs.push((Tab::Lag, format!("{I_LAG} Lag")));
+                            }
                             segmented(ui, "tab", &mut self.tab, &tabs);
                             match self.tab {
                                 Tab::Target => self.target_card(ui, &mut c),
                                 Tab::Click => self.click_card(ui, &mut c),
                                 Tab::Afk => self.afk_card(ui, &mut c),
                                 Tab::Key => self.key_card(ui, &mut c),
+                                Tab::Lag => self.lag_card(ui, &mut c),
                             }
                             self.footer(ui, &mut c);
                         });
@@ -629,10 +653,10 @@ impl App {
         card(ui, None, |ui| {
             ui.label(RichText::new("Toggle hotkey").color(pal().weak).size(11.0));
             ui.label(RichText::new(c.cfg.hotkey.label()).font(FontId::new(20.0, bold())).color(pal().accent));
-            let recording = self.recording.is_some();
+            let recording = matches!(self.recording, Some((KeyFor::Click, _)));
             let label = if recording { "press a key or mouse button… (Esc cancels)".to_string() } else { format!("{I_KEY}  Record new hotkey") };
             if accent_button(ui, &label, recording).clicked() && !recording {
-                self.recording = Some(Instant::now());
+                self.recording = Some((KeyFor::Click, Instant::now()));
                 self.key_msg = None;
             }
             ui.horizontal(|ui| {
@@ -664,9 +688,151 @@ impl App {
     /// Binds the hotkey in the compositor (same as `hyprclick setup`).
     fn apply_hotkey(&mut self, c: &mut Controller) {
         c.cfg.save();
-        self.key_msg = Some(match setup::apply(&c.cfg.hotkey) {
+        self.key_msg = Some(match setup::apply(&c.cfg) {
             Ok(report) => (true, report),
             Err(e) => (false, e),
+        });
+    }
+
+    fn record_key(&mut self, c: &mut Controller, target: KeyFor, hk: Hotkey) {
+        let others: Vec<&Hotkey> = [
+            (KeyFor::Click, &c.cfg.hotkey),
+            (KeyFor::LagTimed, &c.cfg.lag_timed_key),
+            (KeyFor::LagToggle, &c.cfg.lag_toggle_key),
+            (KeyFor::LagHold, &c.cfg.lag_hold_key),
+        ]
+        .into_iter()
+        .filter(|(which, _)| *which != target)
+        .map(|(_, key)| key)
+        .collect();
+        if others.contains(&&hk) {
+            let msg = format!("{} is already used in hyprclick", hk.label());
+            match target {
+                KeyFor::Click => self.key_msg = Some((false, msg)),
+                _ => self.lag_msg = Some(msg),
+            }
+            return;
+        }
+        match target {
+            KeyFor::Click => c.cfg.hotkey = hk,
+            KeyFor::LagTimed => c.cfg.lag_timed_key = hk,
+            KeyFor::LagToggle => c.cfg.lag_toggle_key = hk,
+            KeyFor::LagHold => c.cfg.lag_hold_key = hk,
+        }
+        self.apply_hotkey(c);
+        if target != KeyFor::Click {
+            self.lag_msg = self.key_msg.take().filter(|(ok, _)| !ok).map(|(_, e)| e);
+        }
+    }
+
+    fn lag_card(&mut self, ui: &mut Ui, c: &mut Controller) {
+        card(ui, None, |ui| {
+            if !lag::installed() {
+                ui.label(RichText::new("lagswitch isn't installed").color(pal().text));
+                ui.label(
+                    RichText::new("It's a separate root service, so hyprclick itself never needs root. Install it with scripts/install.sh from the lagswitch repo.")
+                        .color(pal().weak)
+                        .size(11.0),
+                );
+                return;
+            }
+            self.lag.show();
+            let live = self.lag.live();
+            let mut settings = self.lag_settings.take().unwrap_or_else(lag::load_settings);
+            if self.lag_saved.is_none() {
+                self.lag_saved = Some(settings.clone());
+            }
+
+            let down = matches!(live.status, lag::Status::Down(_));
+            ui.horizontal(|ui| {
+                match &live.status {
+                    lag::Status::Idle => pill(ui, "online", pal().good),
+                    lag::Status::Down(_) => pill(ui, "service off", pal().bad),
+                    lag::Status::Frozen { mode, direction, left_ms } => {
+                        let text = format!("frozen {:.1}s", *left_ms as f32 / 1000.0);
+                        pill(ui, &text, pal().bad);
+                        ui.label(RichText::new(format!("{mode}, {direction}")).color(pal().weak).size(11.0));
+                    }
+                }
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    let frozen = matches!(live.status, lag::Status::Frozen { .. });
+                    let label = if frozen { "Release" } else { "Freeze now" };
+                    let click = ui.add_enabled(!down && !settings.app.is_empty(), egui::Button::new(label)).clicked();
+                    if click {
+                        // Same as pressing the timed key.
+                        let args = if frozen { vec!["release"] } else { vec!["freeze"] };
+                        self.lag.send(args.into_iter().map(String::from).collect());
+                    }
+                });
+            });
+            if let lag::Status::Down(reason) = &live.status {
+                ui.label(RichText::new(reason).color(pal().bad).size(11.0));
+            }
+            for msg in [&live.message, &self.lag_msg].into_iter().flatten() {
+                ui.label(RichText::new(format!("⚠ {msg}")).color(pal().bad).size(11.0));
+            }
+
+            ui.separator();
+            ui.add(egui::TextEdit::singleline(&mut self.lag_filter).hint_text("Search apps").desired_width(f32::INFINITY));
+            let filter = self.lag_filter.to_lowercase();
+            egui::ScrollArea::vertical().id_salt("lag_apps").max_height(110.0).auto_shrink([false, true]).show(ui, |ui| {
+                for e in live.entries.iter().filter(|e| e.name.to_lowercase().contains(&filter)) {
+                    let selected = e.name == settings.app;
+                    let label = if e.processes > 1 { format!("{} ({})", e.name, e.processes) } else { e.name.clone() };
+                    let text = RichText::new(label).size(12.0).color(if e.is_flatpak { pal().text } else { pal().weak });
+                    let row = ui.add_enabled(e.freezable, egui::Button::selectable(selected, text));
+                    let row = row.on_disabled_hover_text("Shared with your whole session, so it can't be frozen alone");
+                    if row.clicked() {
+                        settings.app = e.name.clone();
+                    }
+                }
+            });
+
+            ui.separator();
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("Timed").color(pal().text));
+                ui.add(egui::DragValue::new(&mut settings.seconds).range(0.1..=settings.cap_seconds).speed(0.1).max_decimals(1).suffix(" s"));
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    ui.add(egui::DragValue::new(&mut settings.cap_seconds).range(1.0..=300.0).speed(1.0).max_decimals(0).suffix(" s"));
+                    ui.label(RichText::new("Max").color(pal().weak));
+                });
+            });
+            settings.seconds = settings.seconds.min(settings.cap_seconds);
+            let directions = [
+                (lag::Direction::Both, "Both".to_string()),
+                (lag::Direction::In, "Incoming".to_string()),
+                (lag::Direction::Out, "Outgoing".to_string()),
+            ];
+            segmented(ui, "lag_dir", &mut settings.direction, &directions);
+
+            ui.separator();
+            let keys = [
+                (KeyFor::LagTimed, "Timed", c.cfg.lag_timed_key.label()),
+                (KeyFor::LagToggle, "Toggle", c.cfg.lag_toggle_key.label()),
+                (KeyFor::LagHold, "Hold", c.cfg.lag_hold_key.label()),
+            ];
+            for (which, name, label) in keys {
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new(name).color(pal().text));
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        let recording = matches!(self.recording, Some((r, _)) if r == which);
+                        let text = if recording { "press a key…".to_string() } else { label };
+                        if ui.button(RichText::new(text).color(pal().accent)).clicked() && !recording {
+                            self.recording = Some((which, Instant::now()));
+                            self.lag_msg = None;
+                        }
+                    });
+                });
+            }
+            ui.label(RichText::new("Press Timed again to end a freeze early. Every mode stops at Max.").color(pal().weak).size(11.0));
+
+            // Write once a drag ends, where the keybinds will read it.
+            if self.lag_saved.as_ref() != Some(&settings) && !ui.input(|i| i.pointer.any_down()) {
+                self.lag_msg = lag::save_settings(&settings).err();
+                self.lag_saved = Some(settings.clone());
+            }
+            self.lag_settings = Some(settings);
+            ui.ctx().request_repaint_after(Duration::from_millis(250));
         });
     }
 }

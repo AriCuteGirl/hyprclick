@@ -7,6 +7,7 @@ mod hotkey;
 mod hypr;
 mod ipc;
 mod kde;
+mod lag;
 mod setup;
 mod theme;
 mod ui;
@@ -70,7 +71,7 @@ fn setup(keys: Option<String>) {
             }
         }
     }
-    match setup::apply(&cfg.hotkey) {
+    match setup::apply(&cfg) {
         Ok(report) => {
             cfg.save();
             println!("{report}");
