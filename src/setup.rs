@@ -233,33 +233,63 @@ fn lua_file(cfg: &Config) -> String {
     out
 }
 
-/// Timed, toggle and hold. The hold release ignores modifiers, so it still
-/// fires when ALT comes up before the key does.
+/// Modifier keys of the hold combo with the mods still held as they come up,
+/// so the hold also ends when a modifier is let go before the key. Never use
+/// ignore_mods on the key's own release bind: Hyprland then swallows that
+/// letter everywhere, even typed without the modifier.
+fn lag_mod_releases(hold: &Hotkey) -> Vec<(String, String)> {
+    let mut found = Vec::new();
+    for name in &hold.mods {
+        let side = match name.as_str() {
+            "ALT" => "Alt",
+            "CTRL" => "Control",
+            "SHIFT" => "Shift",
+            _ => "Super",
+        };
+        for end in ["L", "R"] {
+            found.push((hold.mods.join(" "), format!("{side}_{end}")));
+        }
+    }
+    found
+}
+
+/// Timed, toggle and hold.
 fn lua_lag_binds(cfg: &Config, cli: &str) -> String {
-    format!(
+    let mut out = format!(
         "\n-- lagswitch: app, duration and direction come from its config (hyprclick's Lag tab).\n\
          hl.bind(\"{timed}\", hl.dsp.exec_cmd(\"{cli} freeze\"), {{ description = \"lagswitch: Timed freeze\" }})\n\
          hl.bind(\"{toggle}\", hl.dsp.exec_cmd(\"{cli} toggle\"), {{ description = \"lagswitch: Toggle freeze\" }})\n\
          hl.bind(\"{hold}\", hl.dsp.exec_cmd(\"{cli} hold start\"), {{ description = \"lagswitch: Hold to freeze\" }})\n\
-         hl.bind(\"{hold}\", hl.dsp.exec_cmd(\"{cli} hold stop\"), {{ release = true, ignore_mods = true, description = \"lagswitch: Release hold\" }})\n",
+         hl.bind(\"{hold}\", hl.dsp.exec_cmd(\"{cli} hold stop\"), {{ release = true, description = \"lagswitch: Release hold\" }})\n",
         timed = cfg.lag_timed_key.combo(),
         toggle = cfg.lag_toggle_key.combo(),
         hold = cfg.lag_hold_key.combo(),
-    )
+    );
+    for (mods, key) in lag_mod_releases(&cfg.lag_hold_key) {
+        let combo = mods.split(' ').chain([key.as_str()]).collect::<Vec<_>>().join(" + ");
+        out += &format!(
+            "hl.bind(\"{combo}\", hl.dsp.exec_cmd(\"{cli} hold stop\"), {{ release = true, non_consuming = true, description = \"lagswitch: Release hold\" }})\n"
+        );
+    }
+    out
 }
 
 fn conf_lag_binds(cfg: &Config, cli: &str) -> String {
     let parts = |k: &Hotkey| format!("{}, {}", k.mods.join(" "), k.key);
-    format!(
+    let mut out = format!(
         "\n# lagswitch: app, duration and direction come from its config (hyprclick's Lag tab).\n\
          bind = {timed}, exec, {cli} freeze\n\
          bind = {toggle}, exec, {cli} toggle\n\
          bind = {hold}, exec, {cli} hold start\n\
-         bindri = {hold}, exec, {cli} hold stop\n",
+         bindr = {hold}, exec, {cli} hold stop\n",
         timed = parts(&cfg.lag_timed_key),
         toggle = parts(&cfg.lag_toggle_key),
         hold = parts(&cfg.lag_hold_key),
-    )
+    );
+    for (mods, key) in lag_mod_releases(&cfg.lag_hold_key) {
+        out += &format!("bindrn = {mods}, {key}, exec, {cli} hold stop\n");
+    }
+    out
 }
 
 fn conf_file(cfg: &Config, rules: bool) -> String {
@@ -325,4 +355,32 @@ fn other_binds(dir: &Path, managed: &Path, main: &Path) -> Vec<String> {
         }
     }
     found
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cfg() -> Config {
+        Config {
+            lag_timed_key: Hotkey { mods: vec!["ALT".into()], key: "Z".into() },
+            lag_toggle_key: Hotkey { mods: vec!["ALT".into()], key: "X".into() },
+            lag_hold_key: Hotkey { mods: vec!["ALT".into()], key: "C".into() },
+            ..serde_json::from_str("{}").unwrap()
+        }
+    }
+
+    #[test]
+    fn lag_binds_never_swallow_a_plain_letter() {
+        assert!(!lua_lag_binds(&cfg(), "x").contains("ignore_mods"));
+        assert!(!conf_lag_binds(&cfg(), "x").contains("bindri"));
+    }
+
+    #[test]
+    fn hold_also_ends_when_the_modifier_comes_up() {
+        let lua = lua_lag_binds(&cfg(), "x");
+        assert!(lua.contains("hl.bind(\"ALT + Alt_L\""));
+        assert!(lua.contains("hl.bind(\"ALT + Alt_R\""));
+        assert!(conf_lag_binds(&cfg(), "x").contains("bindrn = ALT, Alt_L, exec, x hold stop"));
+    }
 }

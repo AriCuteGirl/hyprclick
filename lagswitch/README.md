@@ -80,7 +80,8 @@ Lua config:
 hl.bind("ALT + Z", hl.dsp.exec_cmd("/usr/local/bin/lagswitch freeze"))
 hl.bind("ALT + X", hl.dsp.exec_cmd("/usr/local/bin/lagswitch toggle"))
 hl.bind("ALT + C", hl.dsp.exec_cmd("/usr/local/bin/lagswitch hold start"))
-hl.bind("ALT + C", hl.dsp.exec_cmd("/usr/local/bin/lagswitch hold stop"), { release = true, ignore_mods = true })
+hl.bind("ALT + C", hl.dsp.exec_cmd("/usr/local/bin/lagswitch hold stop"), { release = true })
+hl.bind("ALT + Alt_L", hl.dsp.exec_cmd("/usr/local/bin/lagswitch hold stop"), { release = true, non_consuming = true })
 ```
 
 Or in `hyprland.conf`:
@@ -89,8 +90,12 @@ Or in `hyprland.conf`:
 bind = ALT, Z, exec, /usr/local/bin/lagswitch freeze
 bind = ALT, X, exec, /usr/local/bin/lagswitch toggle
 bind = ALT, C, exec, /usr/local/bin/lagswitch hold start
-bindri = ALT, C, exec, /usr/local/bin/lagswitch hold stop
+bindr = ALT, C, exec, /usr/local/bin/lagswitch hold stop
+bindrn = ALT, Alt_L, exec, /usr/local/bin/lagswitch hold stop
 ```
+
+Don't use `ignore_mods` on the release bind: Hyprland then swallows that letter
+everywhere, even typed without ALT.
 
 ## How it works
 
