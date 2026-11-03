@@ -14,13 +14,16 @@ const USAGE: &str = "usage:
   lagswitch toggle [--whole-pc | --app NAME | --pid PID] [--dir in|out|both] [--cap-ms N]
   lagswitch hold start [--whole-pc | --app NAME | --pid PID] [--dir in|out|both] [--cap-ms N]
   lagswitch hold stop
+  lagswitch lag on|toggle [--app NAME | --pid PID] [--ms N]
+  lagswitch lag off
   lagswitch release
   lagswitch status
   lagswitch config
-  lagswitch set [--whole-pc true|false] [--app NAME] [--ms N] [--dir in|out|both] [--cap-ms N]
+  lagswitch set [--whole-pc true|false] [--app NAME] [--ms N] [--dir in|out|both] [--cap-ms N] [--lag-ms N]
 
 --whole-pc blocks the network for the whole PC. With no target named, the
-saved choice is used; defaults come from ~/.config/lagswitch/config.toml.";
+saved choice is used; defaults come from ~/.config/lagswitch/config.toml.
+`lag` adds fake lag to one app: its ping goes up by --ms until `lag off`.";
 
 fn send(request: &Request) -> Result<(), String> {
     let mut stream = UnixStream::connect(SOCKET).map_err(|e| match e.kind() {
@@ -102,6 +105,50 @@ fn freeze(mode: Mode, args: impl Iterator<Item = String>) -> Result<(), String> 
     Ok(())
 }
 
+fn lag_request(toggle: bool, mut args: impl Iterator<Item = String>, config: &Config) -> Result<Request, String> {
+    let (mut app, mut pid) = (None, None);
+    let mut ms = config.lag_ms;
+    while let Some(flag) = args.next() {
+        match flag.as_str() {
+            "--app" => app = Some(args.next().ok_or("--app needs a name")?),
+            "--pid" => pid = Some(number(args.next(), "--pid")? as u32),
+            "--ms" => ms = number(args.next(), "--ms")?,
+            _ => return Err(format!("unknown option {flag}\n{USAGE}")),
+        }
+    }
+    let target = match (app, pid) {
+        (Some(name), None) => Target::App(name),
+        (None, Some(pid)) => Target::Pid(pid),
+        (None, None) => Target::App(
+            config.last_app.clone().ok_or("no app chosen yet, pick one with --app NAME (see lagswitch list)")?,
+        ),
+        _ => return Err("give either --app or --pid".to_string()),
+    };
+    Ok(Request::Lag { toggle, ms, target })
+}
+
+/// Fake lag on or off, remembering the app like a freeze does.
+fn lag(mut args: impl Iterator<Item = String>) -> Result<(), String> {
+    let toggle = match args.next().as_deref() {
+        Some("on") => false,
+        Some("toggle") => true,
+        Some("off") => return send(&Request::LagOff),
+        _ => return Err(USAGE.to_string()),
+    };
+    let mut config = Config::load()?;
+    let request = lag_request(toggle, args, &config)?;
+    send(&request)?;
+    if let Request::Lag { target: Target::App(name), .. } = request
+        && config.last_app.as_ref() != Some(&name)
+    {
+        config.last_app = Some(name);
+        if let Err(e) = config.save() {
+            eprintln!("lagswitch: {e}");
+        }
+    }
+    Ok(())
+}
+
 /// Tab-separated, one cgroup per row: name, pid, app ID, processes, status, cgroup.
 fn list(filter: Option<String>) -> Result<(), String> {
     // SAFETY: geteuid has no preconditions.
@@ -136,6 +183,7 @@ fn set(mut args: impl Iterator<Item = String>) -> Result<(), String> {
             "--ms" => config.default_ms = number(args.next(), "--ms")?,
             "--dir" => config.direction = Direction::parse(&args.next().ok_or("--dir needs a value")?)?,
             "--cap-ms" => config.max_cap_ms = number(args.next(), "--cap-ms")?,
+            "--lag-ms" => config.lag_ms = number(args.next(), "--lag-ms")?,
             _ => return Err(format!("unknown option {flag}\n{USAGE}")),
         }
     }
@@ -153,6 +201,7 @@ fn run() -> Result<(), String> {
             Some("stop") => send(&Request::HoldStop),
             _ => Err(USAGE.to_string()),
         },
+        Some("lag") => lag(args),
         Some("release") => send(&Request::Release),
         Some("status") => send(&Request::Status),
         Some("config") => {

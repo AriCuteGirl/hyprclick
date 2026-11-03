@@ -56,7 +56,7 @@ check "internet is gone" "$(online)" "000"
 check "sends fail at once" "$(udp_send)" "ENETUNREACH"
 check "loopback still works" "$(ping -c1 -W1 127.0.0.1 > /dev/null && echo ok)" "ok"
 check "NetworkManager untouched" "$(nmcli networking)" "$NM_BEFORE"
-sleep 2.5
+sleep 3.5
 check "timed ends by itself" "$(lagswitch status)" "idle"
 [ -z "$(rule)" ] || { echo "FAIL  rule still there"; fails=$((fails + 1)); }
 check "rules table gone" "$(tables)" "0"

@@ -1,6 +1,6 @@
 # lagswitch
 
-A network freezer for Linux with two kinds of freeze:
+A network freezer for Linux with two kinds of freeze, plus fake lag:
 
 - **Whole PC:** everything on the PC loses its network at once, as if it were unplugged,
   including voice chat and streams. It comes back instantly when the freeze ends,
@@ -8,7 +8,10 @@ A network freezer for Linux with two kinds of freeze:
 - **One app:** the same for one app, while it keeps running and the rest of your PC
   stays online.
 
-Nothing is reset in either mode, so connections carry on when the freeze ends, as long
+- **Fake lag:** one app's ping goes up by the amount you set, for as long as you leave
+  it on. The app stays connected, and everything else keeps its normal ping.
+
+Nothing is reset in either freeze mode, so connections carry on when the freeze ends, as long
 as the other side hasn't given up on you by then.
 
 Built on EndeavourOS with Hyprland and kernel 6.18. It needs systemd, cgroup v2,
@@ -44,6 +47,9 @@ lagswitch hold stop
 lagswitch freeze --whole-pc --ms 5000           # the whole PC loses its network
 lagswitch release                               # end any freeze now
 lagswitch status
+lagswitch lag on --app org.example.App --ms 150   # +150 ms ping
+lagswitch lag toggle                            # on with the saved app and amount, or off
+lagswitch lag off
 ```
 
 `--whole-pc` also works with `toggle` and `hold start`. `--app` takes a Flatpak app ID, part of one, or an exact process name. `--pid` takes
@@ -59,6 +65,11 @@ direction, and `--cap-ms N` to change the failsafe for that freeze.
 Every mode also stops at the failsafe cap: 30 seconds by default, and never more
 than 5 minutes whatever the config says.
 
+Fake lag is separate from freezes and has no cap: it stays on until `lag off` or
+`lag toggle`, from 1 to 5000 ms. Running `lag on` again while it's on changes the
+amount or the app. A freeze on a lagged app still freezes it, and the lag carries on
+afterwards. It only works on one app, not the whole PC.
+
 ## Config
 
 `~/.config/lagswitch/config.toml`. With no target named, a command uses the saved
@@ -70,18 +81,19 @@ default_ms = 5000
 direction = "both"
 max_cap_ms = 30000
 whole_pc = false
+lag_ms = 150
 last_app = "org.example.App"
 ```
 
 Change it from the command line with `lagswitch set`:
 
 ```bash
-lagswitch set --app org.example.App --ms 5000 --dir both --cap-ms 30000
+lagswitch set --app org.example.App --ms 5000 --dir both --cap-ms 30000 --lag-ms 150
 ```
 
 ## Hyprland keys
 
-[hyprclick](../README.md)'s Lag tab has an app picker,
+[hyprclick](https://github.com/AriCuteGirl/hyprclick)'s Lag tab has an app picker,
 settings and recordable keys, and writes the binds for you. To bind them by hand in
 Lua config:
 
@@ -91,6 +103,7 @@ hl.bind("ALT + X", hl.dsp.exec_cmd("/usr/local/bin/lagswitch toggle"))
 hl.bind("ALT + C", hl.dsp.exec_cmd("/usr/local/bin/lagswitch hold start"))
 hl.bind("ALT + C", hl.dsp.exec_cmd("/usr/local/bin/lagswitch hold stop"), { release = true })
 hl.bind("ALT + Alt_L", hl.dsp.exec_cmd("/usr/local/bin/lagswitch hold stop"), { release = true, non_consuming = true })
+hl.bind("ALT + B", hl.dsp.exec_cmd("/usr/local/bin/lagswitch lag toggle"))
 ```
 
 Or in `hyprland.conf`:
@@ -101,6 +114,7 @@ bind = ALT, X, exec, /usr/local/bin/lagswitch toggle
 bind = ALT, C, exec, /usr/local/bin/lagswitch hold start
 bindr = ALT, C, exec, /usr/local/bin/lagswitch hold stop
 bindrn = ALT, Alt_L, exec, /usr/local/bin/lagswitch hold stop
+bind = ALT, B, exec, /usr/local/bin/lagswitch lag toggle
 ```
 
 Don't use `ignore_mods` on the release bind: Hyprland then swallows that letter
@@ -134,6 +148,18 @@ touched. They are swapped in and out as one atomic change:
   `send()` fail straight away with `EPERM`, so the game sees its network fail.
 - **Loopback** isn't touched, so an app's local connections keep working.
 
+### Fake lag
+
+A rule in the output hook and one in the input hook send the app's packets to netfilter
+queue 4242, the same `socket cgroupv2` match as a freeze. The daemon listens on that
+queue and lets each packet through after half the delay on the way out and half on the
+way in, so the round trip a game measures grows by the full amount. It only reads each
+packet's ID, never its contents.
+
+The rules use `queue flags bypass`: if the daemon isn't listening, packets go straight
+through rather than getting stuck. If more than 8192 packets are waiting at once, the
+extra ones pass undelayed.
+
 Rules are removed on normal exit, on SIGINT and SIGTERM, on panic, and when the daemon
 starts. If the daemon is killed outright, systemd cleans up and restarts it.
 
@@ -157,6 +183,8 @@ starts. If the daemon is killed outright, systemd cleans up and restarts it.
   connection.
 - **Long freezes** can still get you kicked if a game times out silent clients. The limit
   depends on the game.
+- **Fake lag follows the app's current cgroup.** If the app restarts, it gets a new one, so
+  turn fake lag off and on again. Pings (ICMP) aren't delayed on the way in.
 
 ## Testing
 
@@ -175,6 +203,12 @@ This one checks both modes and takes the whole PC offline several times:
 
 ```bash
 bash scripts/verify-whole-pc.sh
+```
+
+Fake lag, on a throwaway process, measured over TCP and UDP (300 ms by default):
+
+```bash
+bash scripts/verify-lag.sh 300
 ```
 
 ```bash

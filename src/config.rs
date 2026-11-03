@@ -91,6 +91,8 @@ pub struct Config {
     pub lag_timed_key: crate::hotkey::Hotkey,
     pub lag_toggle_key: crate::hotkey::Hotkey,
     pub lag_hold_key: crate::hotkey::Hotkey,
+    /// Turns fake lag on and off.
+    pub lag_fake_key: crate::hotkey::Hotkey,
 }
 
 impl Default for Config {
@@ -118,6 +120,7 @@ impl Default for Config {
             lag_timed_key: crate::hotkey::Hotkey { mods: vec!["ALT".into()], key: "Z".into() },
             lag_toggle_key: crate::hotkey::Hotkey { mods: vec!["ALT".into()], key: "X".into() },
             lag_hold_key: crate::hotkey::Hotkey { mods: vec!["ALT".into()], key: "C".into() },
+            lag_fake_key: crate::hotkey::Hotkey { mods: vec!["ALT".into()], key: "B".into() },
         }
     }
 }

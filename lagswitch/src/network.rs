@@ -4,7 +4,8 @@
 //!
 //! An `unreachable` routing rule makes every send fail with ENETUNREACH. It sits
 //! just after the local table, so loopback and the PC's own addresses still work.
-//! Routing rules don't touch incoming packets, so a nft rule drops those.
+//! Routing rules don't touch incoming packets, so the daemon's nft table drops
+//! those. This module only handles the routing rule.
 
 use std::io::ErrorKind;
 use std::process::{Command, Stdio};
@@ -41,12 +42,8 @@ fn rule_present(family: &str) -> bool {
 }
 
 pub fn off() -> Result<(), String> {
-    nft::whole_pc()?;
-    if !rule_present("-4")
-        && let Err(e) = ip("-4", &["rule", "add", "priority", PRIORITY, "unreachable"])
-    {
-        let _ = nft::release();
-        return Err(e);
+    if !rule_present("-4") {
+        ip("-4", &["rule", "add", "priority", PRIORITY, "unreachable"])?;
     }
     // Machines without IPv6 have nothing to block here.
     if !rule_present("-6") {

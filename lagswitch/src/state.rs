@@ -26,7 +26,8 @@ pub enum Decision {
 
 pub fn decide(active: Option<&Active>, request: &Request) -> Decision {
     match request {
-        Request::Status => Decision::Report,
+        // Fake lag doesn't touch the freeze.
+        Request::Status | Request::Lag { .. } | Request::LagOff => Decision::Report,
         Request::Release => Decision::Release,
         // A timed freeze started under a held key keeps running out its timer.
         Request::HoldStop => match active {

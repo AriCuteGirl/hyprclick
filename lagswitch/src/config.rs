@@ -7,6 +7,7 @@ use crate::rules::Direction;
 use crate::timer;
 
 pub const DEFAULT_MS: u64 = 1500;
+pub const DEFAULT_LAG_MS: u64 = 150;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Config {
@@ -16,6 +17,8 @@ pub struct Config {
     pub last_app: Option<String>,
     /// Freeze the whole PC unless a command names an app.
     pub whole_pc: bool,
+    /// Fake lag added to the app's ping.
+    pub lag_ms: u64,
 }
 
 impl Default for Config {
@@ -26,6 +29,7 @@ impl Default for Config {
             max_cap_ms: timer::DEFAULT_CAP_MS,
             last_app: None,
             whole_pc: false,
+            lag_ms: DEFAULT_LAG_MS,
         }
     }
 }
@@ -58,6 +62,7 @@ impl Config {
             match key.trim() {
                 "default_ms" => config.default_ms = whole()?,
                 "max_cap_ms" => config.max_cap_ms = whole()?,
+                "lag_ms" => config.lag_ms = whole()?,
                 "direction" => {
                     config.direction = Direction::parse(text_value(value)).map_err(|e| format!("{}: {e}", at()))?;
                 }
@@ -74,11 +79,12 @@ impl Config {
 
     pub fn render(&self) -> String {
         let mut text = format!(
-            "default_ms = {}\ndirection = \"{}\"\nmax_cap_ms = {}\nwhole_pc = {}\n",
+            "default_ms = {}\ndirection = \"{}\"\nmax_cap_ms = {}\nwhole_pc = {}\nlag_ms = {}\n",
             self.default_ms,
             self.direction.name(),
             self.max_cap_ms,
-            self.whole_pc
+            self.whole_pc,
+            self.lag_ms
         );
         if let Some(app) = &self.last_app {
             text.push_str(&format!("last_app = \"{app}\"\n"));
@@ -123,6 +129,7 @@ mod tests {
             max_cap_ms: 10_000,
             last_app: Some("org.foo.Bar".to_string()),
             whole_pc: true,
+            lag_ms: 250,
         };
         assert_eq!(Config::parse(&config.render()), Ok(config));
     }

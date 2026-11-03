@@ -3,7 +3,7 @@
 use std::io::{ErrorKind, Write};
 use std::process::{Command, Stdio};
 
-use crate::rules::{self, Direction};
+use crate::rules::{self, Freeze};
 
 fn load(script: &str) -> Result<(), String> {
     let mut child = Command::new("nft")
@@ -26,12 +26,9 @@ fn load(script: &str) -> Result<(), String> {
     }
 }
 
-pub fn freeze(cgroups: &[String], direction: Direction) -> Result<(), String> {
-    load(&rules::freeze_script(cgroups, direction))
-}
-
-pub fn whole_pc() -> Result<(), String> {
-    load(&rules::whole_pc_script())
+/// Replace our table with these freezes and delays.
+pub fn apply(freeze: Freeze, lag: &[String]) -> Result<(), String> {
+    load(&rules::script(freeze, lag))
 }
 
 pub fn release() -> Result<(), String> {

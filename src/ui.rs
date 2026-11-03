@@ -56,6 +56,7 @@ enum KeyFor {
     LagTimed,
     LagToggle,
     LagHold,
+    LagFake,
 }
 
 struct App {
@@ -700,6 +701,7 @@ impl App {
             (KeyFor::LagTimed, &c.cfg.lag_timed_key),
             (KeyFor::LagToggle, &c.cfg.lag_toggle_key),
             (KeyFor::LagHold, &c.cfg.lag_hold_key),
+            (KeyFor::LagFake, &c.cfg.lag_fake_key),
         ]
         .into_iter()
         .filter(|(which, _)| *which != target)
@@ -718,6 +720,7 @@ impl App {
             KeyFor::LagTimed => c.cfg.lag_timed_key = hk,
             KeyFor::LagToggle => c.cfg.lag_toggle_key = hk,
             KeyFor::LagHold => c.cfg.lag_hold_key = hk,
+            KeyFor::LagFake => c.cfg.lag_fake_key = hk,
         }
         self.apply_hotkey(c);
         if target != KeyFor::Click {
@@ -840,10 +843,52 @@ impl App {
             }
             ui.label(RichText::new("Press Timed again to end a freeze early. Every mode stops at Max.").color(pal().weak).size(11.0));
 
+            ui.separator();
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("Fake lag").color(pal().text));
+                if let Some(ms) = live.fake_lag {
+                    pill(ui, &format!("+{ms} ms"), pal().accent);
+                }
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    let on = live.fake_lag.is_some();
+                    let ready = !settings.whole_pc && !settings.app.is_empty();
+                    let label = if on { "Stop" } else { "Start" };
+                    let button = ui.add_enabled(!down && (on || ready), egui::Button::new(label));
+                    let button = button.on_disabled_hover_text("Pick an app under One app first");
+                    if button.clicked() {
+                        // Same as pressing the fake lag key.
+                        self.lag.send(vec!["lag".into(), "toggle".into()]);
+                    }
+                    ui.add(egui::DragValue::new(&mut settings.lag_ms).range(10..=5000).speed(5.0).suffix(" ms"));
+                });
+            });
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("Fake lag key").color(pal().text));
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    let recording = matches!(self.recording, Some((KeyFor::LagFake, _)));
+                    let text = if recording { "press a key…".to_string() } else { c.cfg.lag_fake_key.label() };
+                    if ui.button(RichText::new(text).color(pal().accent)).clicked() && !recording {
+                        self.recording = Some((KeyFor::LagFake, Instant::now()));
+                        self.lag_msg = None;
+                    }
+                });
+            });
+            let hint = if settings.whole_pc {
+                "Fake lag works on one app: switch to One app and pick it."
+            } else {
+                "Adds this much to the app's ping until you stop it. Everything else keeps its normal ping."
+            };
+            ui.label(RichText::new(hint).color(pal().weak).size(11.0));
+
             // Write once a drag ends, where the keybinds will read it.
             if self.lag_saved.as_ref() != Some(&settings) && !ui.input(|i| i.pointer.any_down()) {
+                let new_ms = self.lag_saved.as_ref().is_some_and(|old| old.lag_ms != settings.lag_ms);
                 self.lag_msg = lag::save_settings(&settings).err();
                 self.lag_saved = Some(settings.clone());
+                // A new amount takes effect straight away while fake lag is on.
+                if new_ms && live.fake_lag.is_some() && self.lag_msg.is_none() {
+                    self.lag.send(vec!["lag".into(), "on".into()]);
+                }
             }
             self.lag_settings = Some(settings);
             ui.ctx().request_repaint_after(Duration::from_millis(250));

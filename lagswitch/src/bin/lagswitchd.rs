@@ -13,7 +13,8 @@ use std::time::{Duration, Instant};
 
 use lagswitch::proto::{FreezeRequest, Request, SOCKET, Target};
 use lagswitch::state::{self, Active, Decision};
-use lagswitch::rules::Direction;
+use lagswitch::delay::{self, Delay};
+use lagswitch::rules::{Direction, Freeze};
 use lagswitch::{cgroup, network, nft};
 
 /// Removes the rules however the daemon ends, including by panic.
@@ -80,15 +81,23 @@ fn peer_uid(stream: &UnixStream) -> Option<u32> {
     (rc == 0).then_some(cred.uid)
 }
 
+/// Fake lag on one app, which lasts until it's turned off.
+struct Lag {
+    ms: u64,
+    cgroups: Vec<String>,
+    queue: Delay,
+}
+
 struct Daemon {
     uid: u32,
     active: Option<Active>,
+    lag: Option<Lag>,
 }
 
 impl Daemon {
     fn resolve(&self, target: &Target) -> Result<Vec<String>, String> {
         let cgroups = match target {
-            Target::Network => return Err("the whole PC has no cgroup".to_string()),
+            Target::Network => return Err("this only works on one app, not the whole PC".to_string()),
             Target::App(name) => cgroup::resolve_app(name, self.uid)?,
             Target::Pid(pid) => vec![cgroup::of_pid(*pid)?],
         };
@@ -99,40 +108,91 @@ impl Daemon {
         Ok(cgroups)
     }
 
+    /// Load the table for this freeze plus the current fake lag.
+    fn apply(&self, active: Option<&Active>) -> Result<(), String> {
+        let freeze = match active {
+            None => Freeze::Off,
+            Some(a) if a.network => Freeze::WholePc,
+            Some(a) => Freeze::Apps(&a.cgroups, a.direction),
+        };
+        nft::apply(freeze, self.lag.as_ref().map_or(&[], |l| l.cgroups.as_slice()))
+    }
+
     fn freeze(&mut self, f: &FreezeRequest, length: Duration) -> Result<(), String> {
         let network_off = self.active.as_ref().is_some_and(|a| a.network);
         let whole_pc = f.target == Target::Network;
-        let (direction, cgroups) = if whole_pc {
-            if !network_off {
-                network::off()?;
-            }
-            (Direction::Both, Vec::new())
-        } else {
-            let cgroups = self.resolve(&f.target)?;
-            if network_off {
-                network::restore()?;
-            }
-            nft::freeze(&cgroups, f.direction)?;
-            (f.direction, cgroups)
+        let (direction, cgroups) =
+            if whole_pc { (Direction::Both, Vec::new()) } else { (f.direction, self.resolve(&f.target)?) };
+        let next = Active { mode: f.mode, direction, cgroups, network: whole_pc, deadline: Instant::now() + length };
+        self.apply(Some(&next))?;
+        let routing = match (whole_pc, network_off) {
+            (true, false) => network::off(),
+            (false, true) => network::restore(),
+            _ => Ok(()),
         };
-        self.active = Some(Active {
-            mode: f.mode,
-            direction,
-            cgroups,
-            network: whole_pc,
-            deadline: Instant::now() + length,
-        });
+        if let Err(e) = routing {
+            let _ = network::restore();
+            let _ = self.apply(None);
+            self.active = None;
+            return Err(e);
+        }
+        self.active = Some(next);
         Ok(())
     }
 
     fn release(&mut self) -> Result<(), String> {
-        network::release_all()?;
+        let network = network::restore();
+        if self.apply(None).is_err() {
+            // Ending the freeze matters more than keeping fake lag on.
+            self.lag = None;
+            nft::release()?;
+        }
+        network?;
         self.active = None;
         Ok(())
     }
 
+    fn lag_on(&mut self, ms: u64, target: &Target) -> Result<(), String> {
+        if ms == 0 || ms > delay::MAX_MS {
+            return Err(format!("fake lag must be 1 to {} ms", delay::MAX_MS));
+        }
+        let cgroups = self.resolve(target)?;
+        let previous = self.lag.as_ref().map(|l| (l.ms, l.cgroups.clone()));
+        match &mut self.lag {
+            Some(lag) => {
+                lag.queue.set_ms(ms);
+                lag.ms = ms;
+                lag.cgroups = cgroups;
+            }
+            None => self.lag = Some(Lag { ms, cgroups, queue: Delay::open(ms)? }),
+        }
+        if let Err(e) = self.apply(self.active.as_ref()) {
+            match (previous, &mut self.lag) {
+                (Some((ms, cgroups)), Some(lag)) => {
+                    lag.queue.set_ms(ms);
+                    lag.ms = ms;
+                    lag.cgroups = cgroups;
+                }
+                _ => self.lag = None,
+            }
+            return Err(e);
+        }
+        Ok(())
+    }
+
+    fn lag_off(&mut self) -> Result<(), String> {
+        let Some(lag) = self.lag.take() else { return Ok(()) };
+        if let Err(e) = self.apply(self.active.as_ref()) {
+            self.lag = Some(lag);
+            return Err(e);
+        }
+        // Dropping the queue lets through whatever was still waiting.
+        drop(lag);
+        Ok(())
+    }
+
     fn report(&self) -> String {
-        match &self.active {
+        let freeze = match &self.active {
             None => "ok idle".to_string(),
             Some(a) => format!(
                 "ok frozen {} {} {} {}",
@@ -141,11 +201,21 @@ impl Daemon {
                 state::millis_until(a.deadline, Instant::now()),
                 if a.network { "network".to_string() } else { a.cgroups.join(",") }
             ),
+        };
+        match &self.lag {
+            Some(lag) => format!("{freeze} lag {} {}", lag.ms, lag.cgroups.join(",")),
+            None => freeze,
         }
     }
 
     fn handle(&mut self, line: &str) -> String {
         let result = Request::parse(line).and_then(|request| {
+            match &request {
+                Request::Lag { toggle: true, .. } if self.lag.is_some() => return self.lag_off(),
+                Request::Lag { ms, target, .. } => return self.lag_on(*ms, target),
+                Request::LagOff => return self.lag_off(),
+                _ => {}
+            }
             match state::decide(self.active.as_ref(), &request) {
                 Decision::Report => Ok(()),
                 Decision::Release => self.release(),
@@ -178,14 +248,19 @@ impl Daemon {
     /// Runs until a signal arrives.
     fn run(&mut self, listener: &UnixListener, signals: &OwnedFd) -> Result<(), String> {
         loop {
-            let timeout = match &self.active {
-                Some(a) => state::millis_until(a.deadline, Instant::now()).min(i32::MAX as u64) as i32,
-                None => -1,
-            };
-            let mut fds = [
+            let now = Instant::now();
+            let next = [self.active.as_ref().map(|a| a.deadline), self.lag.as_ref().and_then(|l| l.queue.next_due())]
+                .into_iter()
+                .flatten()
+                .min();
+            let timeout = next.map_or(-1, |due| state::millis_until(due, now).min(i32::MAX as u64) as i32);
+            let mut fds = vec![
                 libc::pollfd { fd: listener.as_raw_fd(), events: libc::POLLIN, revents: 0 },
                 libc::pollfd { fd: signals.as_raw_fd(), events: libc::POLLIN, revents: 0 },
             ];
+            if let Some(lag) = &self.lag {
+                fds.push(libc::pollfd { fd: lag.queue.fd(), events: libc::POLLIN, revents: 0 });
+            }
             // SAFETY: fds is valid for the call and its length is passed with it.
             let rc = unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as libc::nfds_t, timeout) };
             if rc < 0 {
@@ -197,6 +272,16 @@ impl Daemon {
             }
             if fds[1].revents != 0 {
                 return Ok(());
+            }
+            if let Some(lag) = &mut self.lag {
+                if fds.get(2).is_some_and(|fd| fd.revents != 0)
+                    && let Err(e) = lag.queue.read()
+                {
+                    eprintln!("lagswitchd: {e}");
+                }
+                if let Err(e) = lag.queue.pass_due(Instant::now()) {
+                    eprintln!("lagswitchd: {e}");
+                }
             }
             if fds[0].revents != 0
                 && let Ok((stream, _)) = listener.accept()
@@ -240,7 +325,7 @@ fn run() -> Result<(), String> {
     let cleanup = Cleanup;
     let signals = signal_fd()?;
     let listener = listen(uid)?;
-    let result = Daemon { uid, active: None }.run(&listener, &signals);
+    let result = Daemon { uid, active: None, lag: None }.run(&listener, &signals);
     let _ = fs::remove_file(SOCKET);
     drop(cleanup);
     result

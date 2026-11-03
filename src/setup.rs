@@ -82,10 +82,11 @@ fn apply_hyprland(cfg: &Config) -> Result<String, String> {
     let mut report = format!("{} → hyprclick toggle  ({})", hotkey.label(), managed.display());
     if lag::installed() {
         report += &format!(
-            "\nlagswitch: {} timed, {} toggle, {} hold",
+            "\nlagswitch: {} timed, {} toggle, {} hold, {} fake lag",
             cfg.lag_timed_key.label(),
             cfg.lag_toggle_key.label(),
-            cfg.lag_hold_key.label()
+            cfg.lag_hold_key.label(),
+            cfg.lag_fake_key.label()
         );
     }
     let dupes = other_binds(&dir, &managed, &main);
@@ -253,17 +254,19 @@ fn lag_mod_releases(hold: &Hotkey) -> Vec<(String, String)> {
     found
 }
 
-/// Timed, toggle and hold.
+/// Timed, toggle, hold and fake lag.
 fn lua_lag_binds(cfg: &Config, cli: &str) -> String {
     let mut out = format!(
         "\n-- lagswitch: app, duration and direction come from its config (hyprclick's Lag tab).\n\
          hl.bind(\"{timed}\", hl.dsp.exec_cmd(\"{cli} freeze\"), {{ description = \"lagswitch: Timed freeze\" }})\n\
          hl.bind(\"{toggle}\", hl.dsp.exec_cmd(\"{cli} toggle\"), {{ description = \"lagswitch: Toggle freeze\" }})\n\
          hl.bind(\"{hold}\", hl.dsp.exec_cmd(\"{cli} hold start\"), {{ description = \"lagswitch: Hold to freeze\" }})\n\
-         hl.bind(\"{hold}\", hl.dsp.exec_cmd(\"{cli} hold stop\"), {{ release = true, description = \"lagswitch: Release hold\" }})\n",
+         hl.bind(\"{hold}\", hl.dsp.exec_cmd(\"{cli} hold stop\"), {{ release = true, description = \"lagswitch: Release hold\" }})\n\
+         hl.bind(\"{fake}\", hl.dsp.exec_cmd(\"{cli} lag toggle\"), {{ description = \"lagswitch: Fake lag on/off\" }})\n",
         timed = cfg.lag_timed_key.combo(),
         toggle = cfg.lag_toggle_key.combo(),
         hold = cfg.lag_hold_key.combo(),
+        fake = cfg.lag_fake_key.combo(),
     );
     for (mods, key) in lag_mod_releases(&cfg.lag_hold_key) {
         let combo = mods.split(' ').chain([key.as_str()]).collect::<Vec<_>>().join(" + ");
@@ -281,10 +284,12 @@ fn conf_lag_binds(cfg: &Config, cli: &str) -> String {
          bind = {timed}, exec, {cli} freeze\n\
          bind = {toggle}, exec, {cli} toggle\n\
          bind = {hold}, exec, {cli} hold start\n\
-         bindr = {hold}, exec, {cli} hold stop\n",
+         bindr = {hold}, exec, {cli} hold stop\n\
+         bind = {fake}, exec, {cli} lag toggle\n",
         timed = parts(&cfg.lag_timed_key),
         toggle = parts(&cfg.lag_toggle_key),
         hold = parts(&cfg.lag_hold_key),
+        fake = parts(&cfg.lag_fake_key),
     );
     for (mods, key) in lag_mod_releases(&cfg.lag_hold_key) {
         out += &format!("bindrn = {mods}, {key}, exec, {cli} hold stop\n");
@@ -366,6 +371,7 @@ mod tests {
             lag_timed_key: Hotkey { mods: vec!["ALT".into()], key: "Z".into() },
             lag_toggle_key: Hotkey { mods: vec!["ALT".into()], key: "X".into() },
             lag_hold_key: Hotkey { mods: vec!["ALT".into()], key: "C".into() },
+            lag_fake_key: Hotkey { mods: vec!["ALT".into()], key: "B".into() },
             ..serde_json::from_str("{}").unwrap()
         }
     }
@@ -382,5 +388,11 @@ mod tests {
         assert!(lua.contains("hl.bind(\"ALT + Alt_L\""));
         assert!(lua.contains("hl.bind(\"ALT + Alt_R\""));
         assert!(conf_lag_binds(&cfg(), "x").contains("bindrn = ALT, Alt_L, exec, x hold stop"));
+    }
+
+    #[test]
+    fn fake_lag_key_toggles() {
+        assert!(lua_lag_binds(&cfg(), "x").contains("hl.bind(\"ALT + B\", hl.dsp.exec_cmd(\"x lag toggle\")"));
+        assert!(conf_lag_binds(&cfg(), "x").contains("bind = ALT, B, exec, x lag toggle"));
     }
 }
