@@ -310,8 +310,10 @@ impl Delay {
 }
 
 impl Drop for Delay {
-    /// Closing the socket would drop whatever is still queued, so pass it all first.
+    /// Closing the socket drops whatever the kernel still holds for us, including
+    /// packets handed over but not read yet, so read those and pass everything first.
     fn drop(&mut self) {
+        let _ = self.read();
         let _ = self.pass(None);
     }
 }
