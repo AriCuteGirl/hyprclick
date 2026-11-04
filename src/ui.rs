@@ -278,7 +278,8 @@ impl eframe::App for App {
                                 (Tab::Afk, format!("{I_COFFEE} AFK")),
                                 (Tab::Key, format!("{I_KEY} Key")),
                             ];
-                            if desktop::get() == Desktop::Hyprland {
+                            // Its keys are compositor binds, which KDE doesn't have here.
+                            if desktop::get() != Desktop::Kde {
                                 tabs.push((Tab::Lag, format!("{I_LAG} Lag")));
                             }
                             segmented(ui, "tab", &mut self.tab, &tabs);
@@ -433,6 +434,10 @@ impl App {
                     toggle_switch(ui, &mut c.cfg.cursor_only_in_target);
                     ui.label(RichText::new("Only click while this window is focused").color(pal().text));
                 });
+                // The lock steers by where the cursor is, which Sway doesn't tell apps.
+                if desktop::get() == Desktop::Sway {
+                    return;
+                }
                 ui.horizontal(|ui| {
                     toggle_switch(ui, &mut c.cfg.cursor_lock);
                     ui.label(RichText::new("Lock cursor to the picked spot").color(pal().text));
@@ -680,6 +685,7 @@ impl App {
             }
             let hint = match desktop::get() {
                 Desktop::Hyprland => "Side mouse buttons work too. SUPER combos and keys Hyprland already uses can't be recorded, type those.",
+                Desktop::Sway => "Goes into ~/.config/sway/hyprclick.conf. Side mouse buttons work too. SUPER combos can't be recorded, type those.",
                 Desktop::Kde => "Becomes a KDE global shortcut (System Settings → Shortcuts). KDE can't bind mouse buttons. SUPER (Meta) combos can't be recorded, type those.",
             };
             ui.label(RichText::new(hint).color(pal().weak).size(11.0));
@@ -733,7 +739,7 @@ impl App {
             if !lag::installed() {
                 ui.label(RichText::new("lagswitch isn't installed").color(pal().text));
                 ui.label(
-                    RichText::new("It's a separate root service, so hyprclick itself never needs root. Install it with lagswitch/scripts/install.sh from the hyprclick repo.")
+                    RichText::new("It's a separate root service, so hyprclick itself never needs root. Install it with lagswitch/scripts/install.sh from the hyprclick repo, or on NixOS turn on services.lagswitch from its flake.")
                         .color(pal().weak)
                         .size(11.0),
                 );
@@ -1121,6 +1127,8 @@ fn setup_style(ctx: &egui::Context) {
     };
     let regular = load("rice", &t.font_regular);
     let strong = load("rice-bold", &t.font_bold);
+    let symbols = load("symbols", &crate::theme::symbols_font());
+    let fallback = load("fallback", &crate::theme::fallback_font());
 
     for family in [FontFamily::Proportional, FontFamily::Monospace] {
         if regular {
@@ -1130,6 +1138,11 @@ fn setup_style(ctx: &egui::Context) {
     let mut bold_family = Vec::new();
     if strong {
         bold_family.push("rice-bold".to_string());
+    }
+    for (loaded, name) in [(symbols, "symbols"), (fallback, "fallback")] {
+        if loaded {
+            fonts.families.entry(FontFamily::Proportional).or_default().push(name.into());
+        }
     }
     bold_family.extend(fonts.families[&FontFamily::Proportional].iter().cloned());
     fonts.families.insert(bold(), bold_family);

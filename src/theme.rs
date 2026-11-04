@@ -85,6 +85,17 @@ fn rice_value(dir: &PathBuf, key: &str) -> Option<String> {
     })
 }
 
+/// The icons are Nerd Font symbols. A rice font usually has them; this is the
+/// standalone fallback (nerd-fonts.symbols-only on NixOS).
+pub fn symbols_font() -> Option<PathBuf> {
+    font_file("Symbols Nerd Font", "Regular")
+}
+
+/// For the few characters egui's own fonts lack, like the ● in status pills.
+pub fn fallback_font() -> Option<PathBuf> {
+    font_file("DejaVu Sans", "Book")
+}
+
 fn font_file(family: &str, style: &str) -> Option<PathBuf> {
     let out = Command::new("fc-match").args(["-f", "%{file}", &format!("{family}:style={style}")]).output().ok()?;
     let path = PathBuf::from(String::from_utf8_lossy(&out.stdout).trim());

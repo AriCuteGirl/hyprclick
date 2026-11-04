@@ -9,6 +9,7 @@ mod ipc;
 mod kde;
 mod lag;
 mod setup;
+mod sway;
 mod theme;
 mod ui;
 
@@ -38,10 +39,10 @@ usage:
 fn main() {
     let arg = std::env::args().nth(1);
     // The window list, hotkey and anti-AFK target come from the compositor;
-    // only Hyprland and KDE Plasma are supported.
+    // only Hyprland, Sway and KDE Plasma are supported.
     let help = matches!(arg.as_deref(), Some("help" | "-h" | "--help"));
     if !help && desktop::detect().is_none() {
-        eprintln!("hyprclick runs on Hyprland or KDE Plasma (neither HYPRLAND_INSTANCE_SIGNATURE nor XDG_CURRENT_DESKTOP=KDE is set).");
+        eprintln!("hyprclick runs on Hyprland, Sway or KDE Plasma (none of HYPRLAND_INSTANCE_SIGNATURE, SWAYSOCK or XDG_CURRENT_DESKTOP=KDE is set).");
         std::process::exit(1);
     }
     match arg.as_deref() {

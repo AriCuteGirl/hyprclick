@@ -122,13 +122,15 @@ impl Engine {
             }
         };
         let code = cfg.button.code();
-        let target = if cfg.cursor_only_in_target || cfg.cursor_lock {
+        // Sway doesn't report the cursor, so the lock could never find the spot.
+        let lock_on = cfg.cursor_lock && desktop::get() != Desktop::Sway;
+        let target = if cfg.cursor_only_in_target || lock_on {
             Some(desktop::find_target(&cfg.target_class, &cfg.target_title).ok_or_else(|| format!("window '{}' not found", cfg.target_class))?)
         } else {
             None
         };
         let gate = target.as_ref().filter(|_| cfg.cursor_only_in_target).map(|t| t.address.clone());
-        let lock = target.as_ref().filter(|_| cfg.cursor_lock).map(|t| Mutex::new(SpotLock::new(t, cfg.pos, dev.clone())));
+        let lock = target.as_ref().filter(|_| lock_on).map(|t| Mutex::new(SpotLock::new(t, cfg.pos, dev.clone())));
 
         let stop = Arc::new(AtomicBool::new(false));
         let focused = Arc::new(AtomicBool::new(true));
@@ -225,7 +227,7 @@ impl Drop for Engine {
 }
 
 fn uinput_err(e: std::io::Error) -> String {
-    format!("/dev/uinput: {e} (are you in the 'input' group?)")
+    format!("/dev/uinput: {e} (are you in the 'input' group, or 'uinput' on NixOS?)")
 }
 
 fn make_mouse() -> Result<VirtualDevice, String> {

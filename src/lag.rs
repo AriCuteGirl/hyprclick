@@ -7,14 +7,22 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-pub const CLI: &str = "/usr/local/bin/lagswitch";
+/// Where install.sh puts it. NixOS has it on PATH instead.
+const INSTALLED: &str = "/usr/local/bin/lagswitch";
+
+/// The lagswitch CLI, if it's installed.
+pub fn cli() -> Option<std::path::PathBuf> {
+    let installed = std::path::PathBuf::from(INSTALLED);
+    if installed.exists() { Some(installed) } else { crate::setup::find_program("lagswitch") }
+}
 
 pub fn installed() -> bool {
-    std::path::Path::new(CLI).exists()
+    cli().is_some()
 }
 
 fn run(args: &[&str]) -> Result<String, String> {
-    let out = Command::new(CLI).args(args).output().map_err(|e| format!("lagswitch: {e}"))?;
+    let cli = cli().ok_or("lagswitch isn't installed")?;
+    let out = Command::new(cli).args(args).output().map_err(|e| format!("lagswitch: {e}"))?;
     if out.status.success() {
         Ok(String::from_utf8_lossy(&out.stdout).trim_end().to_string())
     } else {

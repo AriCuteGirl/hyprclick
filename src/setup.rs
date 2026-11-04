@@ -5,6 +5,8 @@
 //! (~/.config/hypr/hyprclick.lua or .conf) plus one line that loads it, so
 //! the user's own files are only touched once, with a backup.
 //!
+//! Sway: the same idea, ~/.config/sway/hyprclick.conf plus one include line.
+//!
 //! KDE: a hidden .desktop file that runs `hyprclick toggle`, bound as a
 //! global shortcut through kglobalaccel (it shows up in System Settings →
 //! Shortcuts), a KWin window rule for the size, and an XDG autostart entry
@@ -13,7 +15,7 @@
 use crate::config::Config;
 use crate::desktop::{self, Desktop};
 use crate::hotkey::Hotkey;
-use crate::{hypr, kde, lag, APP_ID};
+use crate::{hypr, kde, lag, sway, APP_ID};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -23,10 +25,26 @@ fn hypr_dir() -> PathBuf {
     dirs::config_dir().unwrap_or_else(|| PathBuf::from(".")).join("hypr")
 }
 
+/// A program on PATH, preferring a stable path (like NixOS's
+/// /run/current-system/sw/bin) over one inside the Nix store, which changes
+/// with every update.
+pub fn find_program(name: &str) -> Option<PathBuf> {
+    let path = std::env::var_os("PATH")?;
+    let found: Vec<PathBuf> = std::env::split_paths(&path).map(|dir| dir.join(name)).filter(|p| p.is_file()).collect();
+    found.iter().find(|p| !p.starts_with("/nix/store")).or(found.first()).cloned()
+}
+
 /// Path of the binary the hotkey should run.
 fn exe() -> String {
     let installed = dirs::home_dir().unwrap_or_default().join(".local/bin/hyprclick");
-    let path = if installed.exists() { installed } else { std::env::current_exe().unwrap_or(installed) };
+    let current = std::env::current_exe().unwrap_or_else(|_| installed.clone());
+    let path = if installed.exists() {
+        installed
+    } else if current.starts_with("/nix/store") {
+        find_program("hyprclick").filter(|p| !p.starts_with("/nix/store")).unwrap_or(current)
+    } else {
+        current
+    };
     path.display().to_string()
 }
 
@@ -35,8 +53,105 @@ fn exe() -> String {
 pub fn apply(cfg: &Config) -> Result<String, String> {
     match desktop::get() {
         Desktop::Hyprland => apply_hyprland(cfg),
+        Desktop::Sway => apply_sway(cfg),
         Desktop::Kde => apply_kde(&cfg.hotkey),
     }
+}
+
+/// What got bound, for the end of setup.
+fn bound_report(cfg: &Config, managed: &Path) -> String {
+    let mut report = format!("{} → hyprclick toggle  ({})", cfg.hotkey.label(), managed.display());
+    if lag::installed() {
+        report += &format!(
+            "\nlagswitch: {} timed, {} toggle, {} hold, {} fake lag",
+            cfg.lag_timed_key.label(),
+            cfg.lag_toggle_key.label(),
+            cfg.lag_hold_key.label(),
+            cfg.lag_fake_key.label()
+        );
+    }
+    report
+}
+
+fn sway_dir() -> PathBuf {
+    dirs::config_dir().unwrap_or_else(|| PathBuf::from(".")).join("sway")
+}
+
+/// Writes the managed file, checks it with Sway, includes it and reloads.
+fn apply_sway(cfg: &Config) -> Result<String, String> {
+    let dir = sway_dir();
+    let main = dir.join("config");
+    if !main.exists() {
+        return Err(format!(
+            "no Sway config at {}: copy the default there first (cp /etc/sway/config {})",
+            main.display(),
+            main.display()
+        ));
+    }
+    let file = dir.join("hyprclick.conf");
+    std::fs::write(&file, sway_file(cfg)).map_err(|e| e.to_string())?;
+    // Check our file on its own, so a bad bind never reaches the running Sway.
+    let check = Command::new("sway").arg("--validate").arg("--config").arg(&file).output();
+    match check {
+        Ok(out) if !out.status.success() => {
+            let text = String::from_utf8_lossy(&out.stderr);
+            let errors: Vec<&str> = text.lines().filter(|l| l.contains("ERROR") || l.contains("Error")).collect();
+            return Err(format!("Sway rejected it: {}", errors.join(" / ")));
+        }
+        Ok(_) => {}
+        Err(e) => return Err(format!("can't run sway to check the config: {e}")),
+    }
+    let include = format!("\n# hyprclick (added by `hyprclick setup`)\ninclude {}\n", file.display());
+    ensure_line(&main, "hyprclick.conf", &include)?;
+    sway::msg(&["reload"])?;
+    // Start the pad now too, so it's there before the next Roblox launch.
+    let _ = crate::afk::ensure_pad_service();
+    let mut report = bound_report(cfg, &file);
+    if cfg.hotkey.bare_mouse() {
+        report += "\nnote: without a modifier that mouse button only toggles hyprclick now";
+    }
+    Ok(report)
+}
+
+fn sway_file(cfg: &Config) -> String {
+    let (w, h) = WINDOW_SIZE;
+    let mut out = format!(
+        "# Managed by hyprclick: change the key in its Key tab, or run: hyprclick setup \"ALT + J\"\n\
+         # (edits here get overwritten)\n\n\
+         bindsym --no-repeat {mouse}{combo} exec {exe} toggle\n\n\
+         for_window [app_id=\"^{APP_ID}$\"] floating enable, resize set {w} {h}, move position center\n\n\
+         # Virtual gamepad for Gamepad anti-AFK; must exist before Roblox starts.\n\
+         exec {exe} pad\n",
+        mouse = sway_mouse_flag(&cfg.hotkey),
+        combo = cfg.hotkey.sway(),
+        exe = exe(),
+    );
+    if let Some(cli) = lag::cli() {
+        out += &sway_lag_binds(cfg, &cli.display().to_string());
+    }
+    out
+}
+
+/// Mouse buttons only fire over windows with --whole-window.
+fn sway_mouse_flag(key: &Hotkey) -> &'static str {
+    if key.key.starts_with("mouse:") { "--whole-window " } else { "" }
+}
+
+/// Sway repeats a held bind unless told not to, which would flip a toggle on
+/// and off. Letting go of ALT before the hold key needs no extra bind here:
+/// Sway runs the release bind when the hold key comes up.
+fn sway_lag_binds(cfg: &Config, cli: &str) -> String {
+    let bind = |key: &Hotkey, release: bool, cmd: &str| {
+        let flags = format!("{}{}", if release { "--release " } else { "--no-repeat " }, sway_mouse_flag(key));
+        format!("bindsym {flags}{} exec {cli} {cmd}\n", key.sway())
+    };
+    let mut out = String::from("\n# lagswitch: app, duration and direction come from its config (hyprclick's Lag tab).\n");
+    out += &bind(&cfg.lag_timed_key, false, "freeze");
+    out += &bind(&cfg.lag_toggle_key, false, "toggle");
+    out += &bind(&cfg.lag_hold_key, false, "hold start");
+    out += &bind(&cfg.lag_hold_key, true, "hold stop");
+    out += &bind(&cfg.lag_fake_key, false, "lag toggle");
+    out
 }
 
 /// Writes the managed file, makes sure Hyprland loads it and reloads.
@@ -79,16 +194,7 @@ fn apply_hyprland(cfg: &Config) -> Result<String, String> {
     // Start the pad now too, so it's there before the next Roblox launch.
     let _ = crate::afk::ensure_pad_service();
 
-    let mut report = format!("{} → hyprclick toggle  ({})", hotkey.label(), managed.display());
-    if lag::installed() {
-        report += &format!(
-            "\nlagswitch: {} timed, {} toggle, {} hold, {} fake lag",
-            cfg.lag_timed_key.label(),
-            cfg.lag_toggle_key.label(),
-            cfg.lag_hold_key.label(),
-            cfg.lag_fake_key.label()
-        );
-    }
+    let mut report = bound_report(cfg, &managed);
     let dupes = other_binds(&dir, &managed, &main);
     if !dupes.is_empty() {
         report += &format!("\nalso bound in: {} (remove those lines)", dupes.join(", "));
@@ -228,8 +334,8 @@ fn lua_file(cfg: &Config) -> String {
         combo = hk.combo(),
         exe = exe(),
     );
-    if lag::installed() {
-        out += &lua_lag_binds(cfg, lag::CLI);
+    if let Some(cli) = lag::cli() {
+        out += &lua_lag_binds(cfg, &cli.display().to_string());
     }
     out
 }
@@ -314,8 +420,8 @@ fn conf_file(cfg: &Config, rules: bool) -> String {
             "\nwindowrule = float, class:^({APP_ID})$\nwindowrule = size {w} {h}, class:^({APP_ID})$\nwindowrule = center, class:^({APP_ID})$\n"
         );
     }
-    if lag::installed() {
-        out += &conf_lag_binds(cfg, lag::CLI);
+    if let Some(cli) = lag::cli() {
+        out += &conf_lag_binds(cfg, &cli.display().to_string());
     }
     out
 }
@@ -327,11 +433,30 @@ fn ensure_line(file: &Path, needle: &str, block: &str) -> Result<(), String> {
     if text.contains(needle) {
         return Ok(());
     }
-    let backup = file.with_extension(format!("{}.bak-before-hyprclick", file.extension().unwrap_or_default().to_string_lossy()));
+    let backup = match file.extension() {
+        Some(ext) => file.with_extension(format!("{}.bak-before-hyprclick", ext.to_string_lossy())),
+        // Sway's file is just "config".
+        None => file.with_extension("bak-before-hyprclick"),
+    };
     if !backup.exists() {
-        std::fs::copy(file, &backup).map_err(|e| e.to_string())?;
+        std::fs::copy(file, &backup).map_err(|e| format!("can't back up {}: {e}", file.display()))?;
     }
-    std::fs::write(file, text + block).map_err(|e| e.to_string())
+    let text = text + block;
+    match std::fs::write(file, &text) {
+        // A copy of NixOS's /etc/sway/config keeps the store's read-only mode.
+        Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied && make_writable(file) => {
+            std::fs::write(file, &text).map_err(|e| format!("can't write {}: {e}", file.display()))
+        }
+        other => other.map_err(|e| format!("can't write {}: {e}", file.display())),
+    }
+}
+
+/// Give the owner write permission. Only works on a file you own.
+fn make_writable(file: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    let Ok(meta) = std::fs::metadata(file) else { return false };
+    let mode = meta.permissions().mode() | 0o200;
+    std::fs::set_permissions(file, std::fs::Permissions::from_mode(mode)).is_ok()
 }
 
 /// Other config files that also bind `hyprclick toggle` (old manual binds).
@@ -388,6 +513,20 @@ mod tests {
         assert!(lua.contains("hl.bind(\"ALT + Alt_L\""));
         assert!(lua.contains("hl.bind(\"ALT + Alt_R\""));
         assert!(conf_lag_binds(&cfg(), "x").contains("bindrn = ALT, Alt_L, exec, x hold stop"));
+    }
+
+    #[test]
+    fn sway_binds_use_sway_names() {
+        let sway = sway_lag_binds(&cfg(), "x");
+        assert!(sway.contains("bindsym --no-repeat Mod1+z exec x freeze\n"), "{sway}");
+        assert!(sway.contains("bindsym --no-repeat Mod1+c exec x hold start\n"));
+        assert!(sway.contains("bindsym --release Mod1+c exec x hold stop\n"));
+        assert!(sway.contains("bindsym --no-repeat Mod1+b exec x lag toggle\n"));
+        assert!(!sway.contains("Alt_L"), "Sway never runs a release bind on the modifier");
+        let mouse = Hotkey { mods: vec!["CTRL".into(), "SHIFT".into()], key: "mouse:275".into() };
+        assert_eq!(mouse.sway(), "Ctrl+Shift+button8");
+        assert_eq!(sway_mouse_flag(&mouse), "--whole-window ");
+        assert_eq!(Hotkey { mods: vec!["SUPER".into()], key: "F5".into() }.sway(), "Mod4+F5");
     }
 
     #[test]

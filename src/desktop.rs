@@ -1,12 +1,14 @@
 //! Which compositor hyprclick runs under, and the window queries the rest of
 //! the app needs from it. Hyprland goes through its IPC socket (hypr.rs),
-//! KDE Plasma through KWin scripts over D-Bus (kde.rs).
+//! Sway through swaymsg (sway.rs), KDE Plasma through KWin scripts over D-Bus
+//! (kde.rs).
 
 use std::sync::OnceLock;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Desktop {
     Hyprland,
+    Sway,
     Kde,
 }
 
@@ -17,6 +19,9 @@ pub fn detect() -> Option<Desktop> {
     *CURRENT.get_or_init(|| {
         if std::env::var_os("HYPRLAND_INSTANCE_SIGNATURE").is_some() {
             return Some(Desktop::Hyprland);
+        }
+        if std::env::var_os("SWAYSOCK").is_some() {
+            return Some(Desktop::Sway);
         }
         let desktop = std::env::var("XDG_CURRENT_DESKTOP").unwrap_or_default();
         if desktop.split(':').any(|d| d.eq_ignore_ascii_case("KDE")) || std::env::var_os("KDE_FULL_SESSION").is_some() {
@@ -35,6 +40,7 @@ impl Desktop {
     pub fn name(self) -> &'static str {
         match self {
             Desktop::Hyprland => "Hyprland",
+            Desktop::Sway => "Sway",
             Desktop::Kde => "KDE Plasma",
         }
     }
@@ -44,6 +50,7 @@ impl Desktop {
     pub fn window_mode(self) -> Result<(), String> {
         match self {
             Desktop::Hyprland => Ok(()),
+            Desktop::Sway => Err("Window mode needs Hyprland: Sway can't send clicks to a window in the background. Use Cursor mode.".into()),
             Desktop::Kde => Err("Window mode needs Hyprland: KWin can't send clicks to a window in the background. Use Cursor mode.".into()),
         }
     }
@@ -51,7 +58,7 @@ impl Desktop {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Client {
-    /// Hyprland address ("0x55d0…") or KWin internal id ("{uuid}").
+    /// Hyprland address ("0x55d0…"), Sway node id, or KWin internal id ("{uuid}").
     pub address: String,
     pub class: String,
     pub title: String,
@@ -76,6 +83,7 @@ impl Client {
 pub fn clients() -> Vec<Client> {
     match get() {
         Desktop::Hyprland => crate::hypr::clients(),
+        Desktop::Sway => crate::sway::clients(),
         Desktop::Kde => crate::kde::clients(),
     }
 }
@@ -83,6 +91,7 @@ pub fn clients() -> Vec<Client> {
 pub fn cursor_pos() -> Option<(f64, f64)> {
     match get() {
         Desktop::Hyprland => crate::hypr::cursor_pos(),
+        Desktop::Sway => crate::sway::cursor_pos(),
         Desktop::Kde => crate::kde::cursor_pos(),
     }
 }
@@ -91,6 +100,7 @@ pub fn cursor_pos() -> Option<(f64, f64)> {
 pub fn cursor_pos_now() -> Option<(f64, f64)> {
     match get() {
         Desktop::Hyprland => crate::hypr::cursor_pos(),
+        Desktop::Sway => crate::sway::cursor_pos(),
         Desktop::Kde => crate::kde::cursor_pos_now(),
     }
 }
@@ -98,6 +108,7 @@ pub fn cursor_pos_now() -> Option<(f64, f64)> {
 pub fn active_address() -> Option<String> {
     match get() {
         Desktop::Hyprland => crate::hypr::active_address(),
+        Desktop::Sway => crate::sway::active_address(),
         Desktop::Kde => crate::kde::active_address(),
     }
 }
@@ -119,6 +130,7 @@ pub fn find_target(class: &str, title: &str) -> Option<Client> {
 pub fn notify(text: &str) {
     match get() {
         Desktop::Hyprland => crate::hypr::notify(text),
+        Desktop::Sway => crate::sway::notify(text),
         Desktop::Kde => crate::kde::notify(text),
     }
 }
@@ -129,6 +141,7 @@ pub fn focus_app() {
         Desktop::Hyprland => {
             let _ = crate::hypr::request(&format!("dispatch hl.dsp.focus({{window=\"class:^({})$\"}})", crate::APP_ID));
         }
+        Desktop::Sway => crate::sway::focus_class(crate::APP_ID),
         Desktop::Kde => crate::kde::activate_class(crate::APP_ID),
     }
 }

@@ -25,6 +25,27 @@ impl Hotkey {
         self.mods.iter().map(String::as_str).chain([self.key.as_str()]).collect::<Vec<_>>().join(" + ")
     }
 
+    /// Sway bindsym form: "Mod1+h", "Mod1+button8".
+    pub fn sway(&self) -> String {
+        let key = match self.key.as_str() {
+            "mouse:272" => "button1".to_string(),
+            "mouse:273" => "button3".to_string(),
+            "mouse:274" => "button2".to_string(),
+            "mouse:275" => "button8".to_string(),
+            "mouse:276" => "button9".to_string(),
+            // Sway reads an upper case letter as the shifted keysym.
+            k if k.chars().count() == 1 => k.to_lowercase(),
+            k => k.to_string(),
+        };
+        let mods = self.mods.iter().map(|m| match m.as_str() {
+            "SUPER" => "Mod4",
+            "CTRL" => "Ctrl",
+            "ALT" => "Mod1",
+            _ => "Shift",
+        });
+        mods.chain([key.as_str()]).collect::<Vec<_>>().join("+")
+    }
+
     /// Friendlier text for the UI ("ALT + Mouse back").
     pub fn label(&self) -> String {
         let key = match self.key.as_str() {

@@ -296,7 +296,7 @@ fn nudge_pad(pad: &mut VirtualDevice, x: i32, y: i32) -> Result<(), String> {
 }
 
 fn uinput_err(e: std::io::Error) -> String {
-    format!("/dev/uinput: {e} (are you in the 'input' group?)")
+    format!("/dev/uinput: {e} (are you in the 'input' group, or 'uinput' on NixOS?)")
 }
 
 fn make_pad() -> Result<VirtualDevice, String> {
