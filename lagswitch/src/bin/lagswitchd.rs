@@ -302,6 +302,21 @@ impl Daemon {
     }
 }
 
+/// A user name's uid, from the system's user database.
+fn uid_of(name: &str) -> Result<u32, String> {
+    let c_name = std::ffi::CString::new(name).map_err(|_| format!("bad user name \"{name}\""))?;
+    // SAFETY: an all-zero passwd is valid storage for getpwnam_r to fill.
+    let mut entry: libc::passwd = unsafe { mem::zeroed() };
+    let mut buf = vec![0 as libc::c_char; 16384];
+    let mut found: *mut libc::passwd = ptr::null_mut();
+    // SAFETY: every pointer is valid for the call, and buf's length is passed with it.
+    let rc = unsafe { libc::getpwnam_r(c_name.as_ptr(), &mut entry, buf.as_mut_ptr(), buf.len(), &mut found) };
+    if rc != 0 || found.is_null() {
+        return Err(format!("no user named \"{name}\""));
+    }
+    Ok(entry.pw_uid)
+}
+
 fn run() -> Result<(), String> {
     let mut args = std::env::args().skip(1);
     let mut uid = None;
@@ -312,10 +327,11 @@ fn run() -> Result<(), String> {
                 let value = args.next().ok_or("--uid needs a value")?;
                 uid = Some(value.parse().map_err(|_| format!("bad uid \"{value}\""))?);
             }
+            "--user" => uid = Some(uid_of(&args.next().ok_or("--user needs a name")?)?),
             _ => return Err(format!("unknown option {flag}")),
         }
     }
-    let uid = uid.ok_or("--uid is required")?;
+    let uid = uid.ok_or("--uid or --user is required")?;
     // SAFETY: geteuid has no preconditions.
     if unsafe { libc::geteuid() } != 0 {
         return Err("not root".to_string());

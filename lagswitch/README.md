@@ -35,6 +35,26 @@ This builds as your user, then uses sudo to put `lagswitch` and `lagswitchd` in
 bash scripts/uninstall.sh
 ```
 
+### NixOS
+
+The repo is a flake with a NixOS module. In your system flake, add this repo as an input
+and its `nixosModules.default` to your modules, then:
+
+```nix
+services.lagswitch = {
+  enable = true;
+  user = "ari"; # the one user allowed to use it
+};
+```
+
+That runs `lagswitchd --user ari` as a root service with `nft` and `ip` on its path, and
+puts `lagswitch` on your PATH. The [hyprclick](https://github.com/AriCuteGirl/hyprclick)
+flake includes this module too.
+
+If your NixOS firewall uses nftables (`networking.nftables.enable`), reloading the
+firewall flushes every table, including lagswitch's. A freeze or fake lag running at that
+moment just stops.
+
 ## Use
 
 ```bash
