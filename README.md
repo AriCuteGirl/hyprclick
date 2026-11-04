@@ -1,15 +1,15 @@
 # hyprclick
 
-Background autoclicker for **Hyprland** and **KDE Plasma**, written in Rust with an egui UI. Other desktops (GNOME, Sway, plain X11) aren't supported.
+Background autoclicker for **Hyprland**, **Sway** and **KDE Plasma**, written in Rust with an egui UI. Other desktops (GNOME, plain X11) aren't supported. It also installs on [NixOS](#nixos) from its flake.
 
-| | Hyprland | KDE Plasma 6 |
-|---|---|---|
-| Window mode (click a window in the background) | yes | no, see [KDE](#kde-plasma) |
-| Cursor mode | yes | yes |
-| Anti-AFK: Window | yes | no |
-| Anti-AFK: Gamepad | yes | yes |
-| Hotkey from `hyprclick setup` / Key tab | Hyprland bind (keys + mouse buttons) | KDE global shortcut (keys only) |
-| Lag tab (freeze the network, fake lag) | yes | no |
+| | Hyprland | Sway | KDE Plasma 6 |
+|---|---|---|---|
+| Window mode (click a window in the background) | yes | no | no, see [KDE](#kde-plasma) |
+| Cursor mode | yes | yes, without the cursor lock | yes |
+| Anti-AFK: Window | yes | no | no |
+| Anti-AFK: Gamepad | yes | yes | yes |
+| Hotkey from `hyprclick setup` / Key tab | Hyprland bind (keys + mouse buttons) | Sway bindsym (keys + mouse buttons) | KDE global shortcut (keys only) |
+| Lag tab (freeze the network, fake lag) | yes | yes | no |
 
  The window takes its colors and font from the Noctalia rice (`~/.config/noctalia/rice.toml` → `palettes/<custom_palette>.json`), with the Ari palette built in as a fallback.
 
@@ -42,6 +42,48 @@ echo uinput | sudo tee /etc/modules-load.d/uinput.conf
 ```
 
 Then reboot (or log out and back in, and run `sudo modprobe uinput && sudo udevadm trigger`). The error "/dev/uinput: Permission denied (are you in the 'input' group?)" means this step is missing.
+
+## Sway
+
+`hyprclick setup` writes its binds and window rule to `~/.config/sway/hyprclick.conf` and adds one `include` line to `~/.config/sway/config` (with a backup next to it). It checks the file with `sway --validate` before reloading Sway. If you have no `~/.config/sway/config` yet, copy `/etc/sway/config` there first. On NixOS that copy comes out read-only, and setup makes it writable for you.
+
+Sway can't send clicks to a window in the background or tell apps where the cursor is, so it has Cursor mode without **Lock cursor to the picked spot**, and Gamepad anti-AFK. Every bind uses `--no-repeat`, so holding a key never toggles twice.
+
+The Lag tab works the same as on Hyprland. Its One app mode can freeze Flatpak apps such as Sober, because each has its own cgroup. Apps you start from a Sway keybind or terminal share your login's cgroup, so start those with `systemd-run --user --scope <app>` if you want to freeze them alone.
+
+## NixOS
+
+The repo is a flake. Add it to your system flake:
+
+```nix
+{
+  inputs.hyprclick.url = "github:AriCuteGirl/hyprclick";
+
+  outputs = { nixpkgs, hyprclick, ... }: {
+    nixosConfigurations.laptop = nixpkgs.lib.nixosSystem {
+      modules = [
+        ./configuration.nix
+        hyprclick.nixosModules.default
+        {
+          programs.hyprclick = {
+            enable = true;
+            users = [ "ari" ]; # get /dev/uinput through the uinput group
+          };
+          # Optional: the Lag tab's root service.
+          services.lagswitch = {
+            enable = true;
+            user = "ari";
+          };
+        }
+      ];
+    };
+  };
+}
+```
+
+Then `sudo nixos-rebuild switch --flake .#laptop`, log out and back in (for the uinput group), and run `hyprclick setup`. The binds point at `/run/current-system/sw/bin`, so they keep working after updates.
+
+The packages are built with the flake's own nixpkgs (nixos-unstable), because the code needs Rust 1.88 or newer. `nix flake check` also runs a NixOS VM test with Sway: setup, the window, `/dev/uinput`, fake lag and a freeze.
 
 ## KDE Plasma
 
