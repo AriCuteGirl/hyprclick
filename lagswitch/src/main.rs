@@ -24,7 +24,7 @@ const USAGE: &str = "usage:
                 [--lag-ms N] [--lag-style steady|choke] [--lag-jitter PERCENT]
 
 Any command can start with --notify to also show errors as a desktop notification,
-and for `lag`, whether fake lag is now on or off. Keybinds use it.
+and whether the freeze or fake lag is now on or off. Keybinds use it.
 
 --whole-pc blocks the network for the whole PC. With no target named, the
 saved choice is used; defaults come from ~/.config/lagswitch/config.toml.
@@ -106,10 +106,41 @@ fn freeze_request(
 }
 
 /// Send a freeze, then remember the app for next time.
-fn freeze(mode: Mode, args: impl Iterator<Item = String>) -> Result<(), String> {
+/// A notification line for the freeze part of a status reply
+/// ("frozen timed both 5000 network ..." or "idle ...").
+fn freeze_summary(status: &str) -> String {
+    let parts: Vec<&str> = status.split(' ').collect();
+    let ["frozen", mode, direction, left, target, ..] = parts[..] else { return "Unfrozen".to_string() };
+    let what = if target == "network" {
+        "whole PC".to_string()
+    } else {
+        let direction = match direction {
+            "in" => "incoming",
+            "out" => "outgoing",
+            _ => "both ways",
+        };
+        format!("one app, {direction}")
+    };
+    let seconds = left.parse::<f64>().map_or(0.0, |ms| ms / 1000.0);
+    match mode {
+        "timed" => format!("Frozen for {seconds:.1} s ({what})"),
+        "hold" => format!("Frozen while held ({what})"),
+        _ => format!("Frozen until you press again ({what})"),
+    }
+}
+
+/// Print a freeze reply. With --notify, say what happened on the desktop too.
+fn report_freeze(reply: String, notify_change: bool) {
+    if notify_change {
+        notify(&freeze_summary(&reply));
+    }
+    println!("{reply}");
+}
+
+fn freeze(mode: Mode, args: impl Iterator<Item = String>, notify_change: bool) -> Result<(), String> {
     let mut config = Config::load()?;
     let request = freeze_request(mode, args, &config)?;
-    send(&request)?;
+    report_freeze(ask(&request)?, notify_change);
     if let Request::Freeze(FreezeRequest { target: Target::App(name), .. }) = request
         && config.last_app.as_ref() != Some(&name)
     {
@@ -232,19 +263,30 @@ fn set(mut args: impl Iterator<Item = String>) -> Result<(), String> {
     config.save()
 }
 
+/// Releasing the hold key. The bind also fires when nothing is held (ALT
+/// coming up, or after a timed freeze), so only a hold that ends is announced.
+fn hold_stop(notify_change: bool) -> Result<(), String> {
+    let holding = ask(&Request::Status)?.starts_with("frozen hold ");
+    report_freeze(ask(&Request::HoldStop)?, notify_change && holding);
+    Ok(())
+}
+
 fn run(notify_errors: bool) -> Result<(), String> {
     let mut args = std::env::args().skip(1 + usize::from(notify_errors));
     match args.next().as_deref() {
         Some("list") => list(args.next()),
-        Some("freeze") => freeze(Mode::Timed, args),
-        Some("toggle") => freeze(Mode::Toggle, args),
+        Some("freeze") => freeze(Mode::Timed, args, notify_errors),
+        Some("toggle") => freeze(Mode::Toggle, args, notify_errors),
         Some("hold") => match args.next().as_deref() {
-            Some("start") => freeze(Mode::Hold, args),
-            Some("stop") => send(&Request::HoldStop),
+            Some("start") => freeze(Mode::Hold, args, notify_errors),
+            Some("stop") => hold_stop(notify_errors),
             _ => Err(USAGE.to_string()),
         },
         Some("lag") => lag(args, notify_errors),
-        Some("release") => send(&Request::Release),
+        Some("release") => {
+            report_freeze(ask(&Request::Release)?, notify_errors);
+            Ok(())
+        }
         Some("status") => send(&Request::Status),
         Some("config") => {
             print!("{}", Config::load()?.render());
@@ -284,6 +326,15 @@ fn main() -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn summarizes_freezes() {
+        assert_eq!(freeze_summary("idle"), "Unfrozen");
+        assert_eq!(freeze_summary("idle lag 200 a/b style=choke"), "Unfrozen");
+        assert_eq!(freeze_summary("frozen timed both 5000 network"), "Frozen for 5.0 s (whole PC)");
+        assert_eq!(freeze_summary("frozen toggle in 30000 a/b.scope"), "Frozen until you press again (one app, incoming)");
+        assert_eq!(freeze_summary("frozen hold both 29990 a/b.scope lag 200 a/b"), "Frozen while held (one app, both ways)");
+    }
 
     #[test]
     fn summarizes_fake_lag() {
