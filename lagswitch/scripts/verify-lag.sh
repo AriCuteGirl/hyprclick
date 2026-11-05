@@ -8,7 +8,7 @@ OUT=$(dirname "$0")/../lag-results.txt
 TMP=$(mktemp -d)
 exec > >(tee "$OUT") 2>&1
 UNIT=lagtest-$$
-trap 'lagswitch lag off > /dev/null 2>&1; lagswitch release > /dev/null 2>&1; systemctl --user stop "$UNIT.scope" "$UNIT-a.scope" "$UNIT-b.scope" 2> /dev/null; rm -rf "$TMP"' EXIT
+trap 'lagswitch lag off > /dev/null 2>&1; lagswitch release > /dev/null 2>&1; for u in "$UNIT" "$UNIT-a" "$UNIT-b"; do systemctl --user stop "$u.scope" 2> /dev/null; done; rm -rf "$TMP"' EXIT
 
 fails=0
 check() { # name, ok (0 or 1), detail
