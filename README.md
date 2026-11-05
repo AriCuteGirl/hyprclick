@@ -25,7 +25,7 @@ hyprclick setup
 `hyprclick setup` binds ALT+H (pick any other key in the app's Key tab), makes the window float, and starts the virtual gamepad at login. Then open it with `hyprclick` or from your app launcher.
 
 Needs on Hyprland:
-- Hyprland, tested on **0.56.2** (Lua config; the classic `hyprland.conf` is supported but untested). The plugin is compiled against Hyprland's internals on first launch, so other versions may not build.
+- Hyprland **0.57** (tested on 0.57.1; Lua config; the classic `hyprland.conf` is supported but untested). The plugin is compiled against Hyprland's internals on first launch, so other versions may not build. Hyprland 0.56 needs hyprclick 0.3.0 or older.
 - `g++`, `pkg-config` and Hyprland's headers: run `hyprpm update` once (and again after Hyprland updates).
 - For Cursor mode and Gamepad anti-AFK: access to `/dev/uinput` (see below).
 

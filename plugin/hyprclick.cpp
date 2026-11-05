@@ -25,11 +25,14 @@
 
 // The seat's pointer list, each pointer's entered surface and the cursor
 // image lock are private; we need them to drive the target's wl_pointer
-// without moving seat focus. These must be the first Hyprland headers so
-// their include guards don't skip them.
+// without moving seat focus. So are the window backends' X11 / XDG surfaces.
+// These must be the first Hyprland headers so their include guards don't
+// skip them.
 #define private public
 #include <hyprland/src/protocols/core/Seat.hpp>
 #include <hyprland/src/managers/input/InputManager.hpp>
+#include <hyprland/src/desktop/view/window/X11Backend.hpp>
+#include <hyprland/src/desktop/view/window/WaylandBackend.hpp>
 #undef private
 
 #include <hyprland/src/plugins/PluginAPI.hpp>
@@ -37,7 +40,9 @@
 #include <hyprland/src/desktop/state/FocusState.hpp>
 #include <hyprland/src/desktop/state/ViewState.hpp>
 #include <hyprland/src/desktop/state/ViewQuery.hpp>
-#include <hyprland/src/desktop/view/Window.hpp>
+#include <hyprland/src/desktop/view/window/Window.hpp>
+#include <hyprland/src/desktop/view/window/WindowMetadata.hpp>
+#include <hyprland/src/ipc/s1/S1.hpp>
 #include <hyprland/src/event/EventBus.hpp>
 #include <hyprland/src/protocols/XDGShell.hpp>
 #include <hyprland/src/helpers/time/Time.hpp>
@@ -48,7 +53,7 @@
 inline HANDLE PHANDLE = nullptr;
 
 // Bump on any behaviour change: the app reloads a plugin whose version differs.
-constexpr int HYPRCLICK_VERSION = 13;
+constexpr int HYPRCLICK_VERSION = 14;
 
 namespace {
     struct SClicker {
@@ -108,6 +113,23 @@ namespace {
         return Desktop::viewState()->query().selector(selector).mappedOnly().runWindow();
     }
 
+    // Hyprland 0.57 moved a window's X11 / XDG specifics into its backend.
+    bool isX11(const PHLWINDOW& window) {
+        return window && window->backend().isX11();
+    }
+
+    SP<CXWaylandSurface> xsurfaceOf(const PHLWINDOW& window) {
+        if (!isX11(window))
+            return nullptr;
+        const auto X11 = dynamic_cast<Desktop::View::CX11Backend*>(&window->backend());
+        return X11 ? X11->m_xwaylandSurface.lock() : nullptr;
+    }
+
+    SP<CXDGSurfaceResource> xdgOf(const PHLWINDOW& window) {
+        const auto WL = window ? dynamic_cast<Desktop::View::CWaylandBackend*>(&window->backend()) : nullptr;
+        return WL ? WL->m_resource.lock() : nullptr;
+    }
+
     // Xwayland applies wl_pointer.leave immediately but only queues button
     // events, so restoring focus in the same batch makes X drop the click.
     // Keep focus on X11 targets this long before handing it back.
@@ -161,7 +183,7 @@ namespace {
         if (const auto BACK = C.refocusX11.lock()) {
             C.refocusX11.reset();
             if (Desktop::focusState()->window() == BACK)
-                if (const auto XSURF = BACK->m_xwaylandSurface.lock())
+                if (const auto XSURF = xsurfaceOf(BACK))
                     XSURF->activate(true);
         }
         if (DIRECT)
@@ -181,9 +203,9 @@ namespace {
         if (!FOCUS)
             return;
         const auto UNDER = Desktop::viewState()->query().surface(FOCUS).runWindow();
-        if (!UNDER || !UNDER->m_isX11 || UNDER == g_clicker.window.lock())
+        if (!isX11(UNDER) || UNDER == g_clicker.window.lock())
             return;
-        if (const auto XSURF = UNDER->m_xwaylandSurface.lock()) {
+        if (const auto XSURF = xsurfaceOf(UNDER)) {
             XSURF->restackToTop();
             g_clicker.raisedAt = {}; // target is no longer on top
         }
@@ -209,13 +231,11 @@ namespace {
     // focused on another X11 app, its X focus is handed back right after the
     // click so typing there still goes to it.
     void activateX11(PHLWINDOW window) {
-        if (!window->m_isX11)
-            return;
-        const auto XSURF = window->m_xwaylandSurface.lock();
+        const auto XSURF = xsurfaceOf(window);
         if (!XSURF)
             return;
         const auto FOCUSED = Desktop::focusState()->window();
-        if (FOCUSED && FOCUSED->m_isX11 && FOCUSED != window)
+        if (isX11(FOCUSED) && FOCUSED != window)
             g_clicker.refocusX11 = FOCUSED;
         XSURF->activate(true);
     }
@@ -228,7 +248,7 @@ namespace {
     // `motions`: extra pointer moves after the buttons (anti-AFK wiggle).
     bool sendButtons(PHLWINDOW window, const Vector2D& pos, uint32_t button, std::initializer_list<wl_pointer_button_state> states, bool holding = false,
                      const std::vector<Vector2D>& motions = {}) {
-        if (!window || !window->m_isMapped || !window->wlSurface())
+        if (!window || !window->mapped() || !window->wlSurface())
             return false;
 
         const auto SURF = window->wlSurface()->resource();
@@ -276,7 +296,7 @@ namespace {
         if (holding) {
             g_clicker.restorePending = true;
             armTimer(g_clicker.restoreFd, 0, 0);
-        } else if (window->m_isX11) {
+        } else if (isX11(window)) {
             g_clicker.restorePending = true;
             armTimer(g_clicker.restoreFd, X11_RESTORE_NS, 0);
         } else
@@ -329,7 +349,7 @@ namespace {
     Vector2D toLocal(PHLWINDOW window, const Vector2D& pos) {
         const auto BOX   = window->getWindowMainSurfaceBox();
         Vector2D   local = pos - BOX.pos();
-        if (const auto XDG = window->m_xdgSurface.lock())
+        if (const auto XDG = xdgOf(window))
             local = local + XDG->m_current.geometry.pos();
         return {std::clamp(local.x, 0.0, std::max(0.0, BOX.w - 1)), std::clamp(local.y, 0.0, std::max(0.0, BOX.h - 1))};
     }
@@ -349,9 +369,7 @@ namespace {
 
     // Returns true when the click should wait for the raise to be applied.
     bool raiseX11(PHLWINDOW window) {
-        if (!window->m_isX11)
-            return false;
-        const auto XSURF = window->m_xwaylandSurface.lock();
+        const auto XSURF = xsurfaceOf(window);
         if (!XSURF)
             return false;
         const auto NOW   = Time::steadyNow();
@@ -364,7 +382,7 @@ namespace {
     void fire() {
         auto&      C      = g_clicker;
         const auto WINDOW = C.window.lock();
-        if (!C.running || !WINDOW || !WINDOW->m_isMapped)
+        if (!C.running || !WINDOW || !WINDOW->mapped())
             return;
 
         // Picked spot: always the spot (the cursor follows it if it's inside).
@@ -407,7 +425,7 @@ namespace {
             return 0;
 
         const auto WINDOW = C.window.lock();
-        if (!WINDOW || !WINDOW->m_isMapped) {
+        if (!WINDOW || !WINDOW->mapped()) {
             stopClicker("target window closed");
             return 0;
         }
@@ -415,7 +433,7 @@ namespace {
         // A hold longer than the interval would swallow the next press.
         release();
 
-        C.paused = C.onlyVisible && !(WINDOW->m_workspace && WINDOW->m_workspace->isVisible());
+        C.paused = C.onlyVisible && !(WINDOW->m_workspace && WINDOW->m_workspace->visible());
         if (C.paused)
             return 0;
 
@@ -514,14 +532,16 @@ namespace {
         return "ok";
     }
 
-    std::string onCommand(eHyprCtlOutputFormat, std::string request) {
+    std::string handle(const std::string& request) {
         std::istringstream args(request);
-        std::string        name, sub;
-        args >> name >> sub;
+        std::string        sub;
+        args >> sub;
+        if (sub == "hyprclick") // the command name itself, if it's passed along
+            args >> sub;
 
         if (sub == "ping") {
             Dl_info info{};
-            dladdr((void*)&onCommand, &info);
+            dladdr((void*)&handle, &info);
             return std::format("hyprclick ok {} {}", HYPRCLICK_VERSION, info.dli_fname ? info.dli_fname : "?");
         }
         if (sub == "start")
@@ -543,9 +563,13 @@ namespace {
             const auto TARGET = C.window.lock();
             const bool ON     = TARGET && TARGET->wlSurface() && FOCUS == TARGET->wlSurface()->resource();
             return std::format("running={} paused={} clicks={} mouse={} hover={}{} error={}", C.running ? 1 : 0, C.paused ? 1 : 0, C.clicks, MOUSE,
-                               UNDER ? UNDER->m_class : std::string{"-"}, ON ? "(target)" : "", C.lastError.empty() ? "-" : C.lastError);
+                               UNDER ? UNDER->metadata().appID() : std::string{"-"}, ON ? "(target)" : "", C.lastError.empty() ? "-" : C.lastError);
         }
         return "error: unknown subcommand";
+    }
+
+    IPC::Socket1::SResponse onCommand(const IPC::Socket1::SRequest& request) {
+        return handle(request.command);
     }
 }
 
@@ -573,7 +597,7 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
 
     C.mouseMoveListener = Event::bus()->m_events.input.mouse.move.listen([](Vector2D pos, Event::SCallbackInfo&) { onMouseMove(pos); });
 
-    HyprlandAPI::registerHyprCtlCommand(PHANDLE, SHyprCtlCommand{.name = "hyprclick", .exact = false, .fn = onCommand});
+    HyprlandAPI::registerHyprCtlCommand(PHANDLE, IPC::Socket1::SCommand{.name = "hyprclick", .match = IPC::Socket1::COMMAND_MATCH_PREFIX, .handler = onCommand});
 
     return {"hyprclick", "Click inside windows without focusing them", "ari", "1.0"};
 }
