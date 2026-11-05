@@ -3,6 +3,7 @@
 use std::fs;
 use std::path::PathBuf;
 
+use crate::delay::Style;
 use crate::rules::Direction;
 use crate::timer;
 
@@ -17,8 +18,11 @@ pub struct Config {
     pub last_app: Option<String>,
     /// Freeze the whole PC unless a command names an app.
     pub whole_pc: bool,
-    /// Fake lag added to the app's ping.
+    /// Fake lag: added ping (steady) or the longest hold (choke).
     pub lag_ms: u64,
+    pub lag_style: Style,
+    /// Percent, 0 to 100.
+    pub lag_jitter: u8,
 }
 
 impl Default for Config {
@@ -30,6 +34,8 @@ impl Default for Config {
             last_app: None,
             whole_pc: false,
             lag_ms: DEFAULT_LAG_MS,
+            lag_style: Style::Steady,
+            lag_jitter: 0,
         }
     }
 }
@@ -63,6 +69,15 @@ impl Config {
                 "default_ms" => config.default_ms = whole()?,
                 "max_cap_ms" => config.max_cap_ms = whole()?,
                 "lag_ms" => config.lag_ms = whole()?,
+                "lag_style" => {
+                    config.lag_style = Style::parse(text_value(value)).map_err(|e| format!("{}: {e}", at()))?;
+                }
+                "lag_jitter" => {
+                    config.lag_jitter = u8::try_from(whole()?)
+                        .ok()
+                        .filter(|j| *j <= 100)
+                        .ok_or_else(|| format!("{}: lag_jitter must be 0 to 100", at()))?;
+                }
                 "direction" => {
                     config.direction = Direction::parse(text_value(value)).map_err(|e| format!("{}: {e}", at()))?;
                 }
@@ -79,12 +94,14 @@ impl Config {
 
     pub fn render(&self) -> String {
         let mut text = format!(
-            "default_ms = {}\ndirection = \"{}\"\nmax_cap_ms = {}\nwhole_pc = {}\nlag_ms = {}\n",
+            "default_ms = {}\ndirection = \"{}\"\nmax_cap_ms = {}\nwhole_pc = {}\nlag_ms = {}\nlag_style = \"{}\"\nlag_jitter = {}\n",
             self.default_ms,
             self.direction.name(),
             self.max_cap_ms,
             self.whole_pc,
-            self.lag_ms
+            self.lag_ms,
+            self.lag_style.name(),
+            self.lag_jitter
         );
         if let Some(app) = &self.last_app {
             text.push_str(&format!("last_app = \"{app}\"\n"));
@@ -130,6 +147,8 @@ mod tests {
             last_app: Some("org.foo.Bar".to_string()),
             whole_pc: true,
             lag_ms: 250,
+            lag_style: Style::Choke,
+            lag_jitter: 40,
         };
         assert_eq!(Config::parse(&config.render()), Ok(config));
     }

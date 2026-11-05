@@ -76,7 +76,7 @@ fn chain(s: &mut String, name: &str, hook: &str, rules: &[String]) {
 
 /// One atomic transaction that replaces our table with these freezes and
 /// delays. Drops come first, so a frozen app stays frozen while it's lagged.
-pub fn script(freeze: Freeze, lag: &[String]) -> String {
+pub fn script(freeze: Freeze, lag: &[String], lag_inbound: bool) -> String {
     let (mut out, mut inbound) = (Vec::new(), Vec::new());
     match freeze {
         Freeze::Off => {}
@@ -94,7 +94,9 @@ pub fn script(freeze: Freeze, lag: &[String]) -> String {
     }
     for cgroup in lag {
         out.push(format!("oifname != \"lo\" {} counter queue flags bypass to {QUEUE}", matcher(cgroup)));
-        inbound.push(format!("iifname != \"lo\" {} counter queue flags bypass to {QUEUE}", matcher(cgroup)));
+        if lag_inbound {
+            inbound.push(format!("iifname != \"lo\" {} counter queue flags bypass to {QUEUE}", matcher(cgroup)));
+        }
     }
     let mut s = release_script();
     if out.is_empty() && inbound.is_empty() {
@@ -114,7 +116,7 @@ mod tests {
     const CG: &str = "user.slice/app.slice/app-flatpak-org.foo-1.scope";
 
     fn freeze(direction: Direction) -> String {
-        script(Freeze::Apps(&[CG.to_string()], direction), &[])
+        script(Freeze::Apps(&[CG.to_string()], direction), &[], true)
     }
 
     #[test]
@@ -141,19 +143,19 @@ mod tests {
     #[test]
     fn replaces_old_table_in_the_same_transaction() {
         assert!(freeze(Direction::Both).starts_with(&release_script()));
-        assert!(script(Freeze::WholePc, &[]).starts_with(&release_script()));
+        assert!(script(Freeze::WholePc, &[], true).starts_with(&release_script()));
     }
 
     #[test]
     fn every_cgroup_gets_a_rule() {
         let cgroups = ["a/b.scope".to_string(), "a/c.scope".to_string()];
-        let s = script(Freeze::Apps(&cgroups, Direction::In), &[]);
+        let s = script(Freeze::Apps(&cgroups, Direction::In), &[], true);
         assert!(s.contains("\"a/b.scope\"") && s.contains("\"a/c.scope\""));
     }
 
     #[test]
     fn whole_pc_drops_only_inbound_and_spares_loopback() {
-        let s = script(Freeze::WholePc, &[]);
+        let s = script(Freeze::WholePc, &[], true);
         assert!(s.contains("hook input"));
         assert!(s.contains("iifname != \"lo\" counter drop"));
         assert!(!s.contains("hook output"));
@@ -162,13 +164,16 @@ mod tests {
 
     #[test]
     fn nothing_active_only_removes_the_table() {
-        assert_eq!(script(Freeze::Off, &[]), release_script());
+        assert_eq!(script(Freeze::Off, &[], true), release_script());
     }
 
     #[test]
     fn lag_queues_both_ways_and_can_be_bypassed() {
-        let s = script(Freeze::Off, &[CG.to_string()]);
+        let s = script(Freeze::Off, &[CG.to_string()], true);
         assert_eq!(s.matches(&format!("queue flags bypass to {QUEUE}")).count(), 2);
+        let choke = script(Freeze::Off, &[CG.to_string()], false);
+        assert_eq!(choke.matches("queue").count(), 1, "choke only queues outgoing");
+        assert!(!choke.contains("hook input"));
         assert!(s.contains("oifname != \"lo\"") && s.contains("iifname != \"lo\""));
         assert!(!s.contains("drop"));
     }
@@ -176,10 +181,10 @@ mod tests {
     #[test]
     fn freeze_drops_before_lag_queues() {
         let lag = [CG.to_string()];
-        let s = script(Freeze::Apps(&lag, Direction::Both), &lag);
+        let s = script(Freeze::Apps(&lag, Direction::Both), &lag, true);
         let out = &s[s.find("chain out").unwrap_or(0)..s.find("chain in").unwrap_or(s.len())];
         assert!(out.find("drop") < out.find("queue"), "{out}");
-        let whole = script(Freeze::WholePc, &lag);
+        let whole = script(Freeze::WholePc, &lag, true);
         let inbound = &whole[whole.find("chain in").unwrap_or(0)..];
         assert!(inbound.find("drop") < inbound.find("queue"), "{inbound}");
     }

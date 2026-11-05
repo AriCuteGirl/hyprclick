@@ -27,8 +27,8 @@ fn load(script: &str) -> Result<(), String> {
 }
 
 /// Replace our table with these freezes and delays.
-pub fn apply(freeze: Freeze, lag: &[String]) -> Result<(), String> {
-    load(&rules::script(freeze, lag))
+pub fn apply(freeze: Freeze, lag: &[String], lag_inbound: bool) -> Result<(), String> {
+    load(&rules::script(freeze, lag, lag_inbound))
 }
 
 pub fn release() -> Result<(), String> {

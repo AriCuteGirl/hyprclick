@@ -852,8 +852,9 @@ impl App {
             ui.separator();
             ui.horizontal(|ui| {
                 ui.label(RichText::new("Fake lag").color(pal().text));
-                if let Some(ms) = live.fake_lag {
-                    pill(ui, &format!("+{ms} ms"), pal().accent);
+                if let Some(lag) = &live.fake_lag {
+                    let text = if lag.choke { format!("choke {} ms", lag.ms) } else { format!("+{} ms", lag.ms) };
+                    pill(ui, &text, pal().accent);
                 }
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     let on = live.fake_lag.is_some();
@@ -868,6 +869,22 @@ impl App {
                     ui.add(egui::DragValue::new(&mut settings.lag_ms).range(10..=5000).speed(5.0).suffix(" ms"));
                 });
             });
+            let styles = [(false, "Steady".to_string()), (true, "Choke".to_string())];
+            segmented(ui, "lag_style", &mut settings.lag_choke, &styles);
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("Jitter").color(pal().text));
+                ui.add(egui::Slider::new(&mut settings.lag_jitter, 0..=100).suffix(" %"));
+            });
+            // Proof it reaches the app: 0 held means its traffic isn't passing through.
+            if let Some(lag) = &live.fake_lag {
+                let held = lag.held.0 + lag.held.1;
+                let (text, color) = if held == 0 {
+                    ("No packets held yet: is the app sending anything?".to_string(), pal().bad)
+                } else {
+                    (format!("{held} packets held so far"), pal().weak)
+                };
+                ui.label(RichText::new(text).color(color).size(11.0));
+            }
             ui.horizontal(|ui| {
                 ui.label(RichText::new("Fake lag key").color(pal().text));
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -881,6 +898,8 @@ impl App {
             });
             let hint = if settings.whole_pc {
                 "Fake lag works on one app: switch to One app and pick it."
+            } else if settings.lag_choke {
+                "Holds the app's outgoing packets for up to this long, then sends them all at once, again and again. Others see you freeze and jump; your own game stays smooth."
             } else {
                 "Adds this much to the app's ping until you stop it. Everything else keeps its normal ping."
             };
@@ -888,10 +907,12 @@ impl App {
 
             // Write once a drag ends, where the keybinds will read it.
             if self.lag_saved.as_ref() != Some(&settings) && !ui.input(|i| i.pointer.any_down()) {
-                let new_ms = self.lag_saved.as_ref().is_some_and(|old| old.lag_ms != settings.lag_ms);
+                let new_ms = self.lag_saved.as_ref().is_some_and(|old| {
+                    (old.lag_ms, old.lag_choke, old.lag_jitter) != (settings.lag_ms, settings.lag_choke, settings.lag_jitter)
+                });
                 self.lag_msg = lag::save_settings(&settings).err();
                 self.lag_saved = Some(settings.clone());
-                // A new amount takes effect straight away while fake lag is on.
+                // New fake lag settings take effect straight away while it's on.
                 if new_ms && live.fake_lag.is_some() && self.lag_msg.is_none() {
                     self.lag.send(vec!["lag".into(), "on".into()]);
                 }

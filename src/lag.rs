@@ -51,11 +51,24 @@ fn parse_status(text: &str) -> Status {
     }
 }
 
-/// The fake lag part of a status line ("... lag 150 cgroups"), in ms.
-fn parse_fake_lag(text: &str) -> Option<u64> {
+/// Fake lag as the daemon reports it.
+#[derive(Clone, PartialEq, Debug)]
+pub struct FakeLag {
+    pub ms: u64,
+    pub choke: bool,
+    /// Packets held so far, out and in.
+    pub held: (u64, u64),
+}
+
+/// The fake lag part of a status line
+/// ("... lag 150 cgroups style=choke jitter=30 out=12 in=0").
+fn parse_fake_lag(text: &str) -> Option<FakeLag> {
     let mut parts = text.split(' ').skip_while(|p| *p != "lag");
     parts.next()?;
-    parts.next()?.parse().ok()
+    let ms = parts.next()?.parse().ok()?;
+    let field = |key: &str| text.split(' ').find_map(|p| p.strip_prefix(key));
+    let count = |key: &str| field(key).and_then(|v| v.parse().ok()).unwrap_or(0);
+    Some(FakeLag { ms, choke: field("style=") == Some("choke"), held: (count("out="), count("in=")) })
 }
 
 #[derive(Clone, PartialEq, Debug)]
@@ -89,6 +102,8 @@ pub struct Settings {
     pub app: String,
     pub whole_pc: bool,
     pub lag_ms: u32,
+    pub lag_choke: bool,
+    pub lag_jitter: u8,
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -116,6 +131,8 @@ fn parse_settings(text: &str) -> Settings {
         app: String::new(),
         whole_pc: false,
         lag_ms: 150,
+        lag_choke: false,
+        lag_jitter: 0,
     };
     for line in text.lines() {
         let Some((key, value)) = line.split_once('=') else { continue };
@@ -133,6 +150,8 @@ fn parse_settings(text: &str) -> Settings {
             "last_app" => s.app = value.to_string(),
             "whole_pc" => s.whole_pc = value == "true",
             "lag_ms" => s.lag_ms = value.parse().unwrap_or(150),
+            "lag_style" => s.lag_choke = value == "choke",
+            "lag_jitter" => s.lag_jitter = value.parse::<u8>().unwrap_or(0).min(100),
             _ => {}
         }
     }
@@ -151,9 +170,11 @@ pub fn load_settings() -> Settings {
 pub fn save_settings(s: &Settings) -> Result<(), String> {
     let (ms, cap) = (to_ms(s.seconds), to_ms(s.cap_seconds));
     let whole_pc = if s.whole_pc { "true" } else { "false" };
-    let lag_ms = s.lag_ms.to_string();
+    let (lag_ms, jitter) = (s.lag_ms.to_string(), s.lag_jitter.to_string());
+    let style = if s.lag_choke { "choke" } else { "steady" };
     let mut args = vec![
-        "set", "--whole-pc", whole_pc, "--ms", &ms, "--dir", s.direction.name(), "--cap-ms", &cap, "--lag-ms", &lag_ms,
+        "set", "--whole-pc", whole_pc, "--ms", &ms, "--dir", s.direction.name(), "--cap-ms", &cap,
+        "--lag-ms", &lag_ms, "--lag-style", style, "--lag-jitter", &jitter,
     ];
     if !s.app.is_empty() {
         args.extend(["--app", &s.app]);
@@ -165,8 +186,8 @@ pub fn save_settings(s: &Settings) -> Result<(), String> {
 #[derive(Clone)]
 pub struct Live {
     pub status: Status,
-    /// Fake lag in ms while it's on.
-    pub fake_lag: Option<u64>,
+    /// Fake lag while it's on.
+    pub fake_lag: Option<FakeLag>,
     pub entries: Vec<Entry>,
     pub message: Option<String>,
 }
@@ -253,8 +274,9 @@ mod tests {
     #[test]
     fn reads_fake_lag() {
         assert_eq!(parse_fake_lag("idle"), None);
-        assert_eq!(parse_fake_lag("idle lag 150 a/b.scope"), Some(150));
-        assert_eq!(parse_fake_lag("frozen toggle both 900 a/b.scope lag 80 a/b.scope"), Some(80));
+        assert_eq!(parse_fake_lag("idle lag 150 a/b.scope").map(|l| l.ms), Some(150));
+        let lag = parse_fake_lag("frozen toggle both 900 a/b.scope lag 80 a/b.scope style=choke jitter=30 out=12 in=0");
+        assert_eq!(lag, Some(FakeLag { ms: 80, choke: true, held: (12, 0) }));
     }
 
     #[test]
@@ -269,7 +291,7 @@ mod tests {
 
     #[test]
     fn reads_settings() {
-        let s = parse_settings("default_ms = 5000\ndirection = \"out\"\nmax_cap_ms = 10000\nlast_app = \"org.foo\"\nwhole_pc = true\nlag_ms = 250\n");
+        let s = parse_settings("default_ms = 5000\ndirection = \"out\"\nmax_cap_ms = 10000\nlast_app = \"org.foo\"\nwhole_pc = true\nlag_ms = 250\nlag_style = \"choke\"\nlag_jitter = 30\n");
         assert_eq!(
             s,
             Settings {
@@ -278,7 +300,9 @@ mod tests {
                 cap_seconds: 10.0,
                 app: "org.foo".into(),
                 whole_pc: true,
-                lag_ms: 250
+                lag_ms: 250,
+                lag_choke: true,
+                lag_jitter: 30
             }
         );
     }

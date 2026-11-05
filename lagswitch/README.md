@@ -8,8 +8,10 @@ A network freezer for Linux with two kinds of freeze, plus fake lag:
 - **One app:** the same for one app, while it keeps running and the rest of your PC
   stays online.
 
-- **Fake lag:** one app's ping goes up by the amount you set, for as long as you leave
-  it on. The app stays connected, and everything else keeps its normal ping.
+- **Fake lag:** for as long as you leave it on, either one app's ping goes up by the
+  amount you set (steady), or its outgoing packets are held back and sent in bursts
+  so others see it freeze and jump (choke). The app stays connected, and everything
+  else keeps its normal ping.
 
 Nothing is reset in either freeze mode, so connections carry on when the freeze ends, as long
 as the other side hasn't given up on you by then.
@@ -68,6 +70,7 @@ lagswitch freeze --whole-pc --ms 5000           # the whole PC loses its network
 lagswitch release                               # end any freeze now
 lagswitch status
 lagswitch lag on --app org.example.App --ms 150   # +150 ms ping
+lagswitch lag on --style choke --ms 400 --jitter 30  # hold and burst, 280-400 ms each
 lagswitch lag toggle                            # on with the saved app and amount, or off
 lagswitch lag off
 ```
@@ -86,7 +89,19 @@ Every mode also stops at the failsafe cap: 30 seconds by default, and never more
 than 5 minutes whatever the config says.
 
 Fake lag is separate from freezes and has no cap: it stays on until `lag off` or
-`lag toggle`, from 1 to 5000 ms. Running `lag on` again while it's on changes the
+`lag toggle`, from 1 to 5000 ms. There are two styles:
+
+- **steady** adds the amount to the app's ping, half on the way out and half on the
+  way in.
+- **choke** holds the app's outgoing packets for up to the amount, sends them all at
+  once, and starts holding again. The server gets your updates late and in bursts, so
+  others see you freeze and jump while your own game stays smooth. Incoming packets
+  aren't touched.
+
+`--jitter` (0 to 100) shortens each hold, or the steady delay for a quarter second at a
+time, by a random part of up to that percentage. If the app restarts, fake lag moves
+to the new instance within 2 seconds. `lagswitch status` shows how many packets it has
+held (`out=` and `in=`). Running `lag on` again while it's on changes the
 amount or the app. A freeze on a lagged app still freezes it, and the lag carries on
 afterwards. It only works on one app, not the whole PC.
 
@@ -102,13 +117,15 @@ direction = "both"
 max_cap_ms = 30000
 whole_pc = false
 lag_ms = 150
+lag_style = "steady"
+lag_jitter = 0
 last_app = "org.example.App"
 ```
 
 Change it from the command line with `lagswitch set`:
 
 ```bash
-lagswitch set --app org.example.App --ms 5000 --dir both --cap-ms 30000 --lag-ms 150
+lagswitch set --app org.example.App --ms 5000 --dir both --cap-ms 30000 --lag-ms 150 --lag-style choke --lag-jitter 30
 ```
 
 ## Hyprland keys
@@ -171,9 +188,10 @@ touched. They are swapped in and out as one atomic change:
 ### Fake lag
 
 A rule in the output hook and one in the input hook send the app's packets to netfilter
-queue 4242, the same `socket cgroupv2` match as a freeze. The daemon listens on that
-queue and lets each packet through after half the delay on the way out and half on the
-way in, so the round trip a game measures grows by the full amount. It only reads each
+queue 4242, the same `socket cgroupv2` match as a freeze (choke only queues outgoing).
+The daemon listens on that queue and decides when each packet goes: steady adds half the
+delay each way, so the round trip a game measures grows by the full amount, and choke
+gives every packet in a hold the same release time. It only reads each
 packet's ID, never its contents.
 
 The rules use `queue flags bypass`: if the daemon isn't listening, packets go straight
@@ -203,8 +221,8 @@ starts. If the daemon is killed outright, systemd cleans up and restarts it.
   connection.
 - **Long freezes** can still get you kicked if a game times out silent clients. The limit
   depends on the game.
-- **Fake lag follows the app's current cgroup.** If the app restarts, it gets a new one, so
-  turn fake lag off and on again. Pings (ICMP) aren't delayed on the way in.
+- **Fake lag can't see inside the game.** Triggers like "only while shooting" aren't
+  possible from the network side. Pings (ICMP) aren't delayed on the way in.
 
 ## Testing
 

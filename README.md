@@ -154,7 +154,12 @@ The three keys are ALT+Z, ALT+X and ALT+C by default:
 
 Every mode stops at the Max setting, 30 seconds by default.
 
-**Fake lag** works on the app picked under One app: its ping goes up by the amount you set (150 ms by default) until you turn it off, and the rest of your PC keeps its normal ping. ALT+B turns it on and off, or use Start and Stop in the tab. Changing the amount while it's on takes effect straight away.
+**Fake lag** works on the app picked under One app, until you turn it off. ALT+B turns it on and off, or use Start and Stop in the tab. There are two styles:
+
+- **Steady**: the app's ping goes up by the amount you set (150 ms by default).
+- **Choke**: the app's outgoing packets are held for up to the amount and then sent all at once, again and again. Others see you freeze and jump, while your own game stays smooth.
+
+**Jitter** makes each hold (or the steady delay) a random amount shorter, up to that percentage. The tab shows how many packets have been held, so you can tell it's reaching the game. Changes take effect straight away, and if the game restarts, fake lag follows it within 2 seconds. The rest of your PC is never affected.
 
 Changing firewall rules needs root, so this runs through [lagswitch](lagswitch/README.md), a small root service with its own install step. hyprclick itself never needs root and works normally without it:
 

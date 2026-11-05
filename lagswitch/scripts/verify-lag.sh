@@ -8,7 +8,7 @@ OUT=$(dirname "$0")/../lag-results.txt
 TMP=$(mktemp -d)
 exec > >(tee "$OUT") 2>&1
 UNIT=lagtest-$$
-trap 'lagswitch lag off > /dev/null 2>&1; lagswitch release > /dev/null 2>&1; systemctl --user stop "$UNIT.scope" 2> /dev/null; rm -rf "$TMP"' EXIT
+trap 'lagswitch lag off > /dev/null 2>&1; lagswitch release > /dev/null 2>&1; systemctl --user stop "$UNIT.scope" "$UNIT-a.scope" "$UNIT-b.scope" 2> /dev/null; rm -rf "$TMP"' EXIT
 
 fails=0
 check() { # name, ok (0 or 1), detail
@@ -48,7 +48,7 @@ echo "--- normal: tcp ${BASE_TCP} ms, udp ${BASE_UDP} ms"
 [ "$BASE_TCP" != x ] && [ "$BASE_UDP" != x ] || { echo "FAIL  the test app can't reach 1.1.1.1"; exit 1; }
 
 echo "--- fake lag $MS ms"
-check "lag on" "$(lagswitch lag on --pid "$PID" --ms "$MS" | grep -c "lag $MS")" "$(lagswitch status)"
+check "lag on" "$(lagswitch lag on --pid "$PID" --ms "$MS" --style steady --jitter 0 | grep -c "lag $MS")" "$(lagswitch status)"
 read -r tcp udp <<< "$(app)"
 check "TCP ping goes up by $MS" "$(near "$tcp" $((BASE_TCP + MS)) 60)" "$tcp ms"
 check "UDP ping goes up by $MS" "$(near "$udp" $((BASE_UDP + MS)) 60)" "$udp ms"
@@ -56,7 +56,7 @@ read -r _ tcp udp <<< "$("$TMP/measure")"
 check "other apps keep their ping" "$(near "$tcp" "$BASE_TCP" 40)" "tcp $tcp ms, udp $udp ms"
 
 echo "--- change to 100 ms while on"
-lagswitch lag on --pid "$PID" --ms 100 > /dev/null
+lagswitch lag on --pid "$PID" --ms 100 --style steady --jitter 0 > /dev/null
 read -r tcp udp <<< "$(app)"
 check "TCP ping follows the new value" "$(near "$tcp" $((BASE_TCP + 100)) 50)" "$tcp ms"
 check "UDP ping follows the new value" "$(near "$udp" $((BASE_UDP + 100)) 50)" "$udp ms"
@@ -79,8 +79,36 @@ check "toggle turns it off" "$(lagswitch lag toggle --pid "$PID" | grep -cx idle
 read -r tcp udp <<< "$(app)"
 check "ping back to normal" "$(near "$tcp" "$BASE_TCP" 40)" "tcp $tcp ms, udp $udp ms"
 
+echo "--- choke 600 ms"
+lagswitch lag on --pid "$PID" --ms 600 --style choke --jitter 0 > /dev/null
+sleep 1
+FROM=$(date +%s%3N)
+sleep 6
+# Each connect waits for the current hold to end, so times spread up to 600 ms.
+times=$(awk -v a="$FROM" '$1 >= a && $2 != "x" {print $2}' "$TMP/log" | sort -n | tr '\n' ' ')
+low=$(awk '{print $1}' <<< "$times"); high=$(awk '{print $NF}' <<< "$times")
+check "choke holds outgoing packets" "$([ "${high:-0}" -ge 300 ] && [ "$high" -le $((BASE_TCP + 700)) ] && echo 1 || echo 0)" "tcp ms: $times"
+check "and releases them in bursts" "$([ "${low:-999}" -lt "${high:-0}" ] && echo 1 || echo 0)" "from $low to $high ms"
+STATUS=$(lagswitch status)
+out=$(grep -o 'out=[0-9]*' <<< "$STATUS" | cut -d= -f2); in=$(grep -o 'in=[0-9]*' <<< "$STATUS" | cut -d= -f2)
+check "counts held packets" "$([ "${out:-0}" -gt 0 ] && echo 1 || echo 0)" "$STATUS"
+check "leaves incoming packets alone" "$([ "${in:-1}" = 0 ] && echo 1 || echo 0)" "in=$in"
+lagswitch lag off > /dev/null
+
+echo "--- follows an app that restarts"
+cp "$(command -v sleep)" "$TMP/lagfollow"
+systemd-run --user --scope --quiet --unit="$UNIT-a" "$TMP/lagfollow" 300 &
+sleep 1
+check "lag on by name" "$(lagswitch lag on --app lagfollow --ms 100 | grep -c "$UNIT-a")" "$(lagswitch status)"
+systemctl --user stop "$UNIT-a.scope"
+systemd-run --user --scope --quiet --unit="$UNIT-b" "$TMP/lagfollow" 300 &
+sleep 3.5
+check "moved to the new instance" "$(lagswitch status | grep -c "$UNIT-b")" "$(lagswitch status)"
+lagswitch lag off > /dev/null
+systemctl --user stop "$UNIT-b.scope"
+
 echo "--- daemon killed while lagged"
-lagswitch lag on --pid "$PID" --ms "$MS" > /dev/null
+lagswitch lag on --pid "$PID" --ms "$MS" --style steady --jitter 0 > /dev/null
 sudo -n systemctl kill -s KILL lagswitchd 2> /dev/null || sudo systemctl kill -s KILL lagswitchd
 sleep 3
 check "daemon came back idle" "$(lagswitch status | grep -cx idle)" "$(lagswitch status)"

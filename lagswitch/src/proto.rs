@@ -6,12 +6,13 @@
 //!   hold-stop
 //!   release
 //!   status
-//!   lag-on <ms> <target>
-//!   lag-toggle <ms> <target>
+//!   lag-on <ms> <steady|choke> <jitter%> <target>
+//!   lag-toggle <ms> <steady|choke> <jitter%> <target>
 //!   lag-off
 //!
 //! A target is app:<name>, pid:<n> or network (the whole PC). Replies start with "ok" or "err".
 
+use crate::delay::{Shape, Style};
 use crate::rules::Direction;
 
 pub const SOCKET: &str = "/run/lagswitch/sock";
@@ -83,8 +84,8 @@ pub enum Request {
     HoldStop,
     Release,
     Status,
-    /// Fake lag: delay one app's packets by this many ms in total.
-    Lag { toggle: bool, ms: u64, target: Target },
+    /// Fake lag on one app.
+    Lag { toggle: bool, shape: Shape, target: Target },
     LagOff,
 }
 
@@ -102,12 +103,13 @@ impl Request {
             "status" => return Ok(Self::Status),
             "lag-off" => return Ok(Self::LagOff),
             "lag-on" | "lag-toggle" => {
-                let (ms, target) = rest.split_once(' ').ok_or("missing lag target")?;
-                return Ok(Self::Lag {
-                    toggle: verb == "lag-toggle",
-                    ms: number(Some(ms), "ms")?,
-                    target: Target::parse(target)?,
-                });
+                let mut parts = rest.splitn(4, ' ');
+                let ms = number(parts.next(), "ms")?;
+                let style = Style::parse(parts.next().ok_or("missing lag style")?)?;
+                let jitter = number(parts.next(), "jitter")?;
+                let jitter = u8::try_from(jitter).map_err(|_| format!("bad jitter \"{jitter}\""))?;
+                let target = Target::parse(parts.next().ok_or("missing lag target")?)?;
+                return Ok(Self::Lag { toggle: verb == "lag-toggle", shape: Shape { ms, style, jitter }, target });
             }
             _ => {}
         }
@@ -133,9 +135,14 @@ impl Request {
             Self::Release => "release".to_string(),
             Self::Status => "status".to_string(),
             Self::LagOff => "lag-off".to_string(),
-            Self::Lag { toggle, ms, target } => {
-                format!("{} {ms} {}", if *toggle { "lag-toggle" } else { "lag-on" }, target.encode())
-            }
+            Self::Lag { toggle, shape, target } => format!(
+                "{} {} {} {} {}",
+                if *toggle { "lag-toggle" } else { "lag-on" },
+                shape.ms,
+                shape.style.name(),
+                shape.jitter,
+                target.encode()
+            ),
             Self::Freeze(f) => {
                 let verb = match f.mode {
                     Mode::Timed => "timed",
@@ -163,8 +170,9 @@ mod tests {
         round_trip(Request::Release);
         round_trip(Request::Status);
         round_trip(Request::LagOff);
-        for toggle in [false, true] {
-            round_trip(Request::Lag { toggle, ms: 150, target: Target::App("org.foo.Bar".to_string()) });
+        for (toggle, style) in [(false, Style::Steady), (true, Style::Choke)] {
+            let shape = Shape { ms: 150, style, jitter: 30 };
+            round_trip(Request::Lag { toggle, shape, target: Target::App("org.foo.Bar".to_string()) });
         }
         round_trip(Request::Freeze(FreezeRequest {
             mode: Mode::Timed,
@@ -195,7 +203,8 @@ mod tests {
     fn bad_requests_are_errors() {
         for line in ["", "nope", "timed", "timed x both 1 app:a", "timed 1 up 1 app:a",
                      "toggle both 1", "toggle both 1 app:", "toggle both 1 pid:x", "toggle both 1 who",
-                     "lag-on", "lag-on 100", "lag-on x app:a", "lag-toggle 100 who"] {
+                     "lag-on", "lag-on 100", "lag-on x steady 0 app:a", "lag-toggle 100 steady 0 who",
+                     "lag-on 100 wobbly 0 app:a", "lag-on 100 choke 300 app:a", "lag-on 100 app:a"] {
             assert!(Request::parse(line).is_err(), "{line}");
         }
     }

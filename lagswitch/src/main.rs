@@ -6,6 +6,7 @@ use std::time::Duration;
 use lagswitch::proto::{FreezeRequest, Mode, Request, SOCKET, Target};
 use lagswitch::rules::Direction;
 use lagswitch::cgroup;
+use lagswitch::delay::{Shape, Style};
 use lagswitch::config::Config;
 
 const USAGE: &str = "usage:
@@ -14,16 +15,19 @@ const USAGE: &str = "usage:
   lagswitch toggle [--whole-pc | --app NAME | --pid PID] [--dir in|out|both] [--cap-ms N]
   lagswitch hold start [--whole-pc | --app NAME | --pid PID] [--dir in|out|both] [--cap-ms N]
   lagswitch hold stop
-  lagswitch lag on|toggle [--app NAME | --pid PID] [--ms N]
+  lagswitch lag on|toggle [--app NAME | --pid PID] [--ms N] [--style steady|choke] [--jitter PERCENT]
   lagswitch lag off
   lagswitch release
   lagswitch status
   lagswitch config
-  lagswitch set [--whole-pc true|false] [--app NAME] [--ms N] [--dir in|out|both] [--cap-ms N] [--lag-ms N]
+  lagswitch set [--whole-pc true|false] [--app NAME] [--ms N] [--dir in|out|both] [--cap-ms N]
+                [--lag-ms N] [--lag-style steady|choke] [--lag-jitter PERCENT]
 
 --whole-pc blocks the network for the whole PC. With no target named, the
 saved choice is used; defaults come from ~/.config/lagswitch/config.toml.
-`lag` adds fake lag to one app: its ping goes up by --ms until `lag off`.";
+`lag` adds fake lag to one app until `lag off`. steady raises its ping by --ms;
+choke holds its outgoing packets for up to --ms and sends them in bursts, so others
+see it jump. --jitter randomizes each delay by up to that percentage.";
 
 fn send(request: &Request) -> Result<(), String> {
     let mut stream = UnixStream::connect(SOCKET).map_err(|e| match e.kind() {
@@ -52,6 +56,11 @@ fn send(request: &Request) -> Result<(), String> {
 fn number(value: Option<String>, flag: &str) -> Result<u64, String> {
     let value = value.ok_or_else(|| format!("{flag} needs a value"))?;
     value.parse().map_err(|_| format!("{flag} needs a whole number, not \"{value}\""))
+}
+
+fn percent(value: Option<String>, flag: &str) -> Result<u8, String> {
+    let n = number(value, flag)?;
+    u8::try_from(n).ok().filter(|p| *p <= 100).ok_or_else(|| format!("{flag} must be 0 to 100"))
 }
 
 fn freeze_request(
@@ -107,12 +116,14 @@ fn freeze(mode: Mode, args: impl Iterator<Item = String>) -> Result<(), String> 
 
 fn lag_request(toggle: bool, mut args: impl Iterator<Item = String>, config: &Config) -> Result<Request, String> {
     let (mut app, mut pid) = (None, None);
-    let mut ms = config.lag_ms;
+    let mut shape = Shape { ms: config.lag_ms, style: config.lag_style, jitter: config.lag_jitter };
     while let Some(flag) = args.next() {
         match flag.as_str() {
             "--app" => app = Some(args.next().ok_or("--app needs a name")?),
             "--pid" => pid = Some(number(args.next(), "--pid")? as u32),
-            "--ms" => ms = number(args.next(), "--ms")?,
+            "--ms" => shape.ms = number(args.next(), "--ms")?,
+            "--style" => shape.style = Style::parse(&args.next().ok_or("--style needs steady or choke")?)?,
+            "--jitter" => shape.jitter = percent(args.next(), "--jitter")?,
             _ => return Err(format!("unknown option {flag}\n{USAGE}")),
         }
     }
@@ -124,7 +135,8 @@ fn lag_request(toggle: bool, mut args: impl Iterator<Item = String>, config: &Co
         ),
         _ => return Err("give either --app or --pid".to_string()),
     };
-    Ok(Request::Lag { toggle, ms, target })
+    shape.check()?;
+    Ok(Request::Lag { toggle, shape, target })
 }
 
 /// Fake lag on or off, remembering the app like a freeze does.
@@ -184,6 +196,8 @@ fn set(mut args: impl Iterator<Item = String>) -> Result<(), String> {
             "--dir" => config.direction = Direction::parse(&args.next().ok_or("--dir needs a value")?)?,
             "--cap-ms" => config.max_cap_ms = number(args.next(), "--cap-ms")?,
             "--lag-ms" => config.lag_ms = number(args.next(), "--lag-ms")?,
+            "--lag-style" => config.lag_style = Style::parse(&args.next().ok_or("--lag-style needs steady or choke")?)?,
+            "--lag-jitter" => config.lag_jitter = percent(args.next(), "--lag-jitter")?,
             _ => return Err(format!("unknown option {flag}\n{USAGE}")),
         }
     }

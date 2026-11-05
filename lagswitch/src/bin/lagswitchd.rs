@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 
 use lagswitch::proto::{FreezeRequest, Request, SOCKET, Target};
 use lagswitch::state::{self, Active, Decision};
-use lagswitch::delay::{self, Delay};
+use lagswitch::delay::{Delay, Shape};
 use lagswitch::rules::{Direction, Freeze};
 use lagswitch::{cgroup, network, nft};
 
@@ -81,11 +81,16 @@ fn peer_uid(stream: &UnixStream) -> Option<u32> {
     (rc == 0).then_some(cred.uid)
 }
 
+/// How often fake lag looks for the app again, in case it restarted.
+const FOLLOW_EVERY: Duration = Duration::from_secs(2);
+
 /// Fake lag on one app, which lasts until it's turned off.
 struct Lag {
-    ms: u64,
+    shape: Shape,
+    target: Target,
     cgroups: Vec<String>,
     queue: Delay,
+    checked: Instant,
 }
 
 struct Daemon {
@@ -115,7 +120,11 @@ impl Daemon {
             Some(a) if a.network => Freeze::WholePc,
             Some(a) => Freeze::Apps(&a.cgroups, a.direction),
         };
-        nft::apply(freeze, self.lag.as_ref().map_or(&[], |l| l.cgroups.as_slice()))
+        let (lag, inbound) = match &self.lag {
+            Some(l) => (l.cgroups.as_slice(), l.shape.delays_inbound()),
+            None => (&[][..], false),
+        };
+        nft::apply(freeze, lag, inbound)
     }
 
     fn freeze(&mut self, f: &FreezeRequest, length: Duration) -> Result<(), String> {
@@ -152,25 +161,28 @@ impl Daemon {
         Ok(())
     }
 
-    fn lag_on(&mut self, ms: u64, target: &Target) -> Result<(), String> {
-        if ms == 0 || ms > delay::MAX_MS {
-            return Err(format!("fake lag must be 1 to {} ms", delay::MAX_MS));
-        }
+    fn lag_on(&mut self, shape: Shape, target: &Target) -> Result<(), String> {
+        shape.check()?;
         let cgroups = self.resolve(target)?;
-        let previous = self.lag.as_ref().map(|l| (l.ms, l.cgroups.clone()));
+        let previous = self.lag.as_ref().map(|l| (l.shape, l.target.clone(), l.cgroups.clone()));
         match &mut self.lag {
             Some(lag) => {
-                lag.queue.set_ms(ms);
-                lag.ms = ms;
+                lag.queue.set_shape(shape);
+                lag.shape = shape;
+                lag.target = target.clone();
                 lag.cgroups = cgroups;
             }
-            None => self.lag = Some(Lag { ms, cgroups, queue: Delay::open(ms)? }),
+            None => {
+                let queue = Delay::open(shape)?;
+                self.lag = Some(Lag { shape, target: target.clone(), cgroups, queue, checked: Instant::now() });
+            }
         }
         if let Err(e) = self.apply(self.active.as_ref()) {
             match (previous, &mut self.lag) {
-                (Some((ms, cgroups)), Some(lag)) => {
-                    lag.queue.set_ms(ms);
-                    lag.ms = ms;
+                (Some((shape, target, cgroups)), Some(lag)) => {
+                    lag.queue.set_shape(shape);
+                    lag.shape = shape;
+                    lag.target = target;
                     lag.cgroups = cgroups;
                 }
                 _ => self.lag = None,
@@ -178,6 +190,29 @@ impl Daemon {
             return Err(e);
         }
         Ok(())
+    }
+
+    /// If the lagged app restarted, it has a new cgroup: move the rules to it.
+    fn follow_lag(&mut self, now: Instant) {
+        let Some(lag) = &mut self.lag else { return };
+        if now < lag.checked + FOLLOW_EVERY || !matches!(lag.target, Target::App(_)) {
+            return;
+        }
+        lag.checked = now;
+        let target = lag.target.clone();
+        // Not running right now: keep the old rules until it's back.
+        let Ok(cgroups) = self.resolve(&target) else { return };
+        let Some(lag) = &mut self.lag else { return };
+        if cgroups == lag.cgroups {
+            return;
+        }
+        let old = std::mem::replace(&mut lag.cgroups, cgroups);
+        if let Err(e) = self.apply(self.active.as_ref()) {
+            eprintln!("lagswitchd: can't follow the app: {e}");
+            if let Some(lag) = &mut self.lag {
+                lag.cgroups = old;
+            }
+        }
     }
 
     fn lag_off(&mut self) -> Result<(), String> {
@@ -203,7 +238,15 @@ impl Daemon {
             ),
         };
         match &self.lag {
-            Some(lag) => format!("{freeze} lag {} {}", lag.ms, lag.cgroups.join(",")),
+            Some(lag) => format!(
+                "{freeze} lag {} {} style={} jitter={} out={} in={}",
+                lag.shape.ms,
+                lag.cgroups.join(","),
+                lag.shape.style.name(),
+                lag.shape.jitter,
+                lag.queue.counts.0,
+                lag.queue.counts.1
+            ),
             None => freeze,
         }
     }
@@ -212,7 +255,7 @@ impl Daemon {
         let result = Request::parse(line).and_then(|request| {
             match &request {
                 Request::Lag { toggle: true, .. } if self.lag.is_some() => return self.lag_off(),
-                Request::Lag { ms, target, .. } => return self.lag_on(*ms, target),
+                Request::Lag { shape, target, .. } => return self.lag_on(*shape, target),
                 Request::LagOff => return self.lag_off(),
                 _ => {}
             }
@@ -249,10 +292,14 @@ impl Daemon {
     fn run(&mut self, listener: &UnixListener, signals: &OwnedFd) -> Result<(), String> {
         loop {
             let now = Instant::now();
-            let next = [self.active.as_ref().map(|a| a.deadline), self.lag.as_ref().and_then(|l| l.queue.next_due())]
-                .into_iter()
-                .flatten()
-                .min();
+            let next = [
+                self.active.as_ref().map(|a| a.deadline),
+                self.lag.as_ref().and_then(|l| l.queue.next_due()),
+                self.lag.as_ref().map(|l| l.checked + FOLLOW_EVERY),
+            ]
+            .into_iter()
+            .flatten()
+            .min();
             let timeout = next.map_or(-1, |due| state::millis_until(due, now).min(i32::MAX as u64) as i32);
             let mut fds = vec![
                 libc::pollfd { fd: listener.as_raw_fd(), events: libc::POLLIN, revents: 0 },
@@ -283,6 +330,7 @@ impl Daemon {
                     eprintln!("lagswitchd: {e}");
                 }
             }
+            self.follow_lag(Instant::now());
             if fds[0].revents != 0
                 && let Ok((stream, _)) = listener.accept()
                 && let Err(e) = self.serve(stream)
