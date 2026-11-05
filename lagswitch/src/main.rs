@@ -24,7 +24,7 @@ const USAGE: &str = "usage:
                 [--lag-ms N] [--lag-style steady|choke] [--lag-jitter PERCENT]
 
 Any command can start with --notify to also show errors as a desktop notification,
-which keybinds use.
+and for `lag`, whether fake lag is now on or off. Keybinds use it.
 
 --whole-pc blocks the network for the whole PC. With no target named, the
 saved choice is used; defaults come from ~/.config/lagswitch/config.toml.
@@ -32,7 +32,14 @@ saved choice is used; defaults come from ~/.config/lagswitch/config.toml.
 choke holds its outgoing packets for up to --ms and sends them in bursts, so others
 see it jump. --jitter randomizes each delay by up to that percentage.";
 
+/// Print the daemon's reply.
 fn send(request: &Request) -> Result<(), String> {
+    println!("{}", ask(request)?);
+    Ok(())
+}
+
+/// The daemon's reply, without the "ok".
+fn ask(request: &Request) -> Result<String, String> {
     let mut stream = UnixStream::connect(SOCKET).map_err(|e| match e.kind() {
         ErrorKind::NotFound | ErrorKind::ConnectionRefused => {
             "the daemon isn't running, start it with: sudo systemctl start lagswitchd".to_string()
@@ -48,10 +55,7 @@ fn send(request: &Request) -> Result<(), String> {
     let mut reply = String::new();
     BufReader::new(&stream).read_line(&mut reply).map_err(io_error)?;
     match reply.trim_end().strip_prefix("ok") {
-        Some(text) => {
-            println!("{}", text.trim_start());
-            Ok(())
-        }
+        Some(text) => Ok(text.trim_start().to_string()),
         None => Err(reply.trim_end().trim_start_matches("err ").to_string()),
     }
 }
@@ -143,16 +147,37 @@ fn lag_request(toggle: bool, mut args: impl Iterator<Item = String>, config: &Co
 }
 
 /// Fake lag on or off, remembering the app like a freeze does.
-fn lag(mut args: impl Iterator<Item = String>) -> Result<(), String> {
+/// A notification line for the fake lag part of a status reply.
+fn lag_summary(status: &str) -> String {
+    let mut parts = status.split(' ').skip_while(|p| *p != "lag");
+    let Some(ms) = parts.nth(1) else { return "Fake lag off".to_string() };
+    let field = |key: &str| status.split(' ').find_map(|p| p.strip_prefix(key)).unwrap_or("?");
+    match field("style=") {
+        "choke" => format!("Fake lag on: choke {ms} ms, jitter {}%", field("jitter=")),
+        _ => format!("Fake lag on: +{ms} ms ping, jitter {}%", field("jitter=")),
+    }
+}
+
+/// Fake lag on or off. With --notify, say which on the desktop too.
+fn lag(mut args: impl Iterator<Item = String>, notify_change: bool) -> Result<(), String> {
+    let report = |reply: String| {
+        if notify_change {
+            notify(&lag_summary(&reply));
+        }
+        println!("{reply}");
+    };
     let toggle = match args.next().as_deref() {
         Some("on") => false,
         Some("toggle") => true,
-        Some("off") => return send(&Request::LagOff),
+        Some("off") => {
+            report(ask(&Request::LagOff)?);
+            return Ok(());
+        }
         _ => return Err(USAGE.to_string()),
     };
     let mut config = Config::load()?;
     let request = lag_request(toggle, args, &config)?;
-    send(&request)?;
+    report(ask(&request)?);
     if let Request::Lag { target: Target::App(name), .. } = request
         && config.last_app.as_ref() != Some(&name)
     {
@@ -218,7 +243,7 @@ fn run(notify_errors: bool) -> Result<(), String> {
             Some("stop") => send(&Request::HoldStop),
             _ => Err(USAGE.to_string()),
         },
-        Some("lag") => lag(args),
+        Some("lag") => lag(args, notify_errors),
         Some("release") => send(&Request::Release),
         Some("status") => send(&Request::Status),
         Some("config") => {
@@ -231,10 +256,11 @@ fn run(notify_errors: bool) -> Result<(), String> {
 }
 
 /// Run from a keybind, nobody sees stderr, so binds pass --notify to show
-/// errors on the desktop too.
-fn notify(error: &str) {
+/// errors (and fake lag turning on or off) on the desktop too.
+fn notify(text: &str) {
     let _ = std::process::Command::new("notify-send")
-        .args(["-a", "lagswitch", "lagswitch", error])
+        // Short-lived, and replacing the last one where the daemon supports it.
+        .args(["-a", "lagswitch", "-t", "2500", "-h", "string:x-canonical-private-synchronous:lagswitch", "lagswitch", text])
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
@@ -252,5 +278,24 @@ fn main() -> ExitCode {
             }
             ExitCode::FAILURE
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn summarizes_fake_lag() {
+        assert_eq!(lag_summary("idle"), "Fake lag off");
+        assert_eq!(lag_summary("frozen toggle both 900 a/b"), "Fake lag off");
+        assert_eq!(
+            lag_summary("idle lag 200 a/b.scope style=choke jitter=50 out=0 in=0"),
+            "Fake lag on: choke 200 ms, jitter 50%"
+        );
+        assert_eq!(
+            lag_summary("idle lag 150 a/b.scope style=steady jitter=0 out=3 in=2"),
+            "Fake lag on: +150 ms ping, jitter 0%"
+        );
     }
 }
