@@ -6,6 +6,8 @@ export LC_ALL=C
 MS=${1:-300}
 OUT=$(dirname "$0")/../lag-results.txt
 TMP=$(mktemp -d)
+# Commands that name an app save it as the chosen one, so keep your real config out of it.
+export XDG_CONFIG_HOME=$TMP/config
 exec > >(tee "$OUT") 2>&1
 UNIT=lagtest-$$
 trap 'lagswitch lag off > /dev/null 2>&1; lagswitch release > /dev/null 2>&1; for u in "$UNIT" "$UNIT-a" "$UNIT-b"; do systemctl --user stop "$u.scope" 2> /dev/null; done; rm -rf "$TMP"' EXIT

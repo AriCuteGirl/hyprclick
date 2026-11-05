@@ -64,7 +64,7 @@ pkgs.testers.runNixOSTest {
         print(out)
         assert "fake lag" in out, out
         conf = alice("cat ~/.config/sway/hyprclick.conf")
-        assert "/run/current-system/sw/bin/lagswitch lag toggle" in conf, conf
+        assert "/run/current-system/sw/bin/lagswitch --notify lag toggle" in conf, conf
         assert "/run/current-system/sw/bin/hyprclick toggle" in conf, conf
         alice("grep -q 'include .*hyprclick.conf' ~/.config/sway/config")
         assert "hyprclick" in alice("swaymsg -t get_config -r")

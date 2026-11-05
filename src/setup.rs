@@ -34,6 +34,12 @@ pub fn find_program(name: &str) -> Option<PathBuf> {
     found.iter().find(|p| !p.starts_with("/nix/store")).or(found.first()).cloned()
 }
 
+/// lagswitch as the binds run it: errors show as a notification, since nobody
+/// sees a keybind's output.
+fn notifying(cli: &Path) -> String {
+    format!("{} --notify", cli.display())
+}
+
 /// Path of the binary the hotkey should run.
 fn exe() -> String {
     let installed = dirs::home_dir().unwrap_or_default().join(".local/bin/hyprclick");
@@ -127,7 +133,7 @@ fn sway_file(cfg: &Config) -> String {
         exe = exe(),
     );
     if let Some(cli) = lag::cli() {
-        out += &sway_lag_binds(cfg, &cli.display().to_string());
+        out += &sway_lag_binds(cfg, &notifying(&cli));
     }
     out
 }
@@ -335,7 +341,7 @@ fn lua_file(cfg: &Config) -> String {
         exe = exe(),
     );
     if let Some(cli) = lag::cli() {
-        out += &lua_lag_binds(cfg, &cli.display().to_string());
+        out += &lua_lag_binds(cfg, &notifying(&cli));
     }
     out
 }
@@ -421,7 +427,7 @@ fn conf_file(cfg: &Config, rules: bool) -> String {
         );
     }
     if let Some(cli) = lag::cli() {
-        out += &conf_lag_binds(cfg, &cli.display().to_string());
+        out += &conf_lag_binds(cfg, &notifying(&cli));
     }
     out
 }

@@ -23,6 +23,9 @@ const USAGE: &str = "usage:
   lagswitch set [--whole-pc true|false] [--app NAME] [--ms N] [--dir in|out|both] [--cap-ms N]
                 [--lag-ms N] [--lag-style steady|choke] [--lag-jitter PERCENT]
 
+Any command can start with --notify to also show errors as a desktop notification,
+which keybinds use.
+
 --whole-pc blocks the network for the whole PC. With no target named, the
 saved choice is used; defaults come from ~/.config/lagswitch/config.toml.
 `lag` adds fake lag to one app until `lag off`. steady raises its ping by --ms;
@@ -204,8 +207,8 @@ fn set(mut args: impl Iterator<Item = String>) -> Result<(), String> {
     config.save()
 }
 
-fn run() -> Result<(), String> {
-    let mut args = std::env::args().skip(1);
+fn run(notify_errors: bool) -> Result<(), String> {
+    let mut args = std::env::args().skip(1 + usize::from(notify_errors));
     match args.next().as_deref() {
         Some("list") => list(args.next()),
         Some("freeze") => freeze(Mode::Timed, args),
@@ -227,11 +230,26 @@ fn run() -> Result<(), String> {
     }
 }
 
+/// Run from a keybind, nobody sees stderr, so binds pass --notify to show
+/// errors on the desktop too.
+fn notify(error: &str) {
+    let _ = std::process::Command::new("notify-send")
+        .args(["-a", "lagswitch", "lagswitch", error])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+}
+
 fn main() -> ExitCode {
-    match run() {
+    let notify_errors = std::env::args().nth(1).as_deref() == Some("--notify");
+    match run(notify_errors) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("lagswitch: {e}");
+            if notify_errors {
+                notify(&e);
+            }
             ExitCode::FAILURE
         }
     }
