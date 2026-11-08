@@ -119,6 +119,8 @@ fn apply_sway(cfg: &Config) -> Result<String, String> {
     sway::msg(&["reload"])?;
     // Start the pad now too, so it's there before the next Roblox launch.
     let _ = crate::afk::ensure_pad_service();
+    #[cfg(target_os = "linux")]
+    crate::overlay::ensure_running();
     let mut report = bound_report(cfg, &file);
     if cfg.hotkey.bare_mouse() {
         report += "\nnote: without a modifier that mouse button only toggles hyprclick now";
@@ -164,6 +166,7 @@ fn sway_lag_binds(cfg: &Config, cli: &str) -> String {
     out += &bind(&cfg.lag_hold_key, false, "hold start");
     out += &bind(&cfg.lag_hold_key, true, "hold stop");
     out += &bind(&cfg.lag_fake_key, false, "lag toggle");
+    out += &format!("\n# Shows freezes and fake lag on screen (off in the Lag tab).\nexec {} overlay\n", exe());
     out
 }
 
@@ -206,6 +209,8 @@ fn apply_hyprland(cfg: &Config) -> Result<String, String> {
 
     // Start the pad now too, so it's there before the next Roblox launch.
     let _ = crate::afk::ensure_pad_service();
+    #[cfg(target_os = "linux")]
+    crate::overlay::ensure_running();
 
     let mut report = bound_report(cfg, &managed);
     let dupes = other_binds(&dir, &managed, &main);
@@ -266,6 +271,8 @@ fn apply_kde(hotkey: &Hotkey) -> Result<String, String> {
         report += &format!("\npad autostart skipped: {e}");
     }
     let _ = crate::afk::ensure_pad_service();
+    #[cfg(target_os = "linux")]
+    crate::overlay::ensure_running();
     Ok(report)
 }
 
@@ -400,6 +407,11 @@ fn lua_lag_binds(cfg: &Config, cli: &str) -> String {
             "hl.bind(\"{combo}\", hl.dsp.exec_cmd(\"{cli} hold stop\"), {{ release = true, non_consuming = true, description = \"lagswitch: Release hold\" }})\n"
         );
     }
+    out += &format!(
+        "\n-- Shows freezes and fake lag on screen (off in the Lag tab).\n\
+         hl.on(\"hyprland.start\", function() hl.exec_cmd(\"{} overlay\") end)\n",
+        exe()
+    );
     out
 }
 
@@ -420,6 +432,7 @@ fn conf_lag_binds(cfg: &Config, cli: &str) -> String {
     for (mods, key) in lag_mod_releases(&cfg.lag_hold_key) {
         out += &format!("bindrn = {mods}, {key}, exec, {cli} hold stop\n");
     }
+    out += &format!("\n# Shows freezes and fake lag on screen (off in the Lag tab).\nexec-once = {} overlay\n", exe());
     out
 }
 

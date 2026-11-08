@@ -90,7 +90,7 @@ pub enum Status {
     Down(String),
 }
 
-fn parse_status(text: &str) -> Status {
+pub(crate) fn parse_status(text: &str) -> Status {
     let mut parts = text.split(' ');
     if parts.next() != Some("frozen") {
         return Status::Idle;
@@ -113,7 +113,7 @@ pub struct FakeLag {
 
 /// The fake lag part of a status line
 /// ("... lag 150 cgroups style=choke jitter=30 out=12 in=0").
-fn parse_fake_lag(text: &str) -> Option<FakeLag> {
+pub(crate) fn parse_fake_lag(text: &str) -> Option<FakeLag> {
     let mut parts = text.split(' ').skip_while(|p| *p != "lag");
     parts.next()?;
     let ms = parts.next()?.parse().ok()?;

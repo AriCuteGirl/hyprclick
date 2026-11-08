@@ -93,6 +93,8 @@ pub struct Config {
     pub lag_hold_key: crate::hotkey::Hotkey,
     /// Turns fake lag on and off.
     pub lag_fake_key: crate::hotkey::Hotkey,
+    /// Show freezes and fake lag on screen (`hyprclick overlay`, Linux).
+    pub lag_overlay: bool,
 }
 
 impl Default for Config {
@@ -122,6 +124,7 @@ impl Default for Config {
             lag_toggle_key: crate::hotkey::Hotkey { mods: vec!["ALT".into()], key: "X".into() },
             lag_hold_key: crate::hotkey::Hotkey { mods: vec!["ALT".into()], key: "C".into() },
             lag_fake_key: crate::hotkey::Hotkey { mods: vec!["ALT".into()], key: "B".into() },
+            lag_overlay: true,
         }
     }
 }

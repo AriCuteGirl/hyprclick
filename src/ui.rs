@@ -925,6 +925,17 @@ impl App {
             };
             ui.label(RichText::new(hint).color(pal().weak).size(11.0));
 
+            #[cfg(target_os = "linux")]
+            ui.horizontal(|ui| {
+                if toggle_switch(ui, &mut c.cfg.lag_overlay).changed() && c.cfg.lag_overlay {
+                    // The overlay reads the setting from disk.
+                    c.cfg.save();
+                    crate::overlay::ensure_running();
+                }
+                ui.label(RichText::new("Show on screen").color(pal().text))
+                    .on_hover_text("A banner above the middle of the screen while frozen or lagging, with the time left");
+            });
+
             // Write once a drag ends, where the keybinds will read it.
             if self.lag_saved.as_ref() != Some(&settings) && !ui.input(|i| i.pointer.any_down()) {
                 let new_ms = self.lag_saved.as_ref().is_some_and(|old| {
