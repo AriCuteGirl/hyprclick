@@ -623,3 +623,169 @@ mod tests {
         assert!(matches!(verdict(&all, &ipv4_udp(1, 2), false), Verdict::Drop));
     }
 }
+
+/// `hyprclick lag-probe`: keep one TCP connection and one UDP socket open to
+/// 1.1.1.1 and print round trips, "tcp 12" / "udp 9" (x for a timeout).
+pub fn probe() {
+    use std::io::{BufRead, BufReader, Write};
+    use std::net::{TcpStream, UdpSocket};
+    let timeout = Some(Duration::from_secs(3));
+    let query: [u8; 29] = [
+        0x12, 0x34, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 7, b'e', b'x', b'a', b'm', b'p', b'l', b'e', 3, b'c', b'o', b'm', 0, 0, 1, 0, 1,
+    ];
+    let udp = UdpSocket::bind("0.0.0.0:0").and_then(|s| s.connect("1.1.1.1:53").map(|()| s));
+    let mut tcp: Option<BufReader<TcpStream>> = None;
+    let out = std::io::stdout();
+    loop {
+        if tcp.is_none() {
+            tcp = TcpStream::connect_timeout(&"1.1.1.1:80".parse().expect("valid address"), Duration::from_secs(3))
+                .ok()
+                .inspect(|s| {
+                    let _ = s.set_read_timeout(timeout);
+                })
+                .map(BufReader::new);
+        }
+        let started = Instant::now();
+        let tcp_ms = tcp.as_mut().and_then(|reader| {
+            reader.get_mut().write_all(b"HEAD / HTTP/1.1\r\nHost: 1.1.1.1\r\nConnection: keep-alive\r\n\r\n").ok()?;
+            let mut line = String::new();
+            loop {
+                line.clear();
+                if reader.read_line(&mut line).ok()? == 0 {
+                    return None;
+                }
+                if line == "\r\n" {
+                    return Some(started.elapsed().as_millis());
+                }
+            }
+        });
+        if tcp_ms.is_none() {
+            tcp = None;
+        }
+        let udp_ms = udp.as_ref().ok().and_then(|s| {
+            let _ = s.set_read_timeout(timeout);
+            let started = Instant::now();
+            s.send(&query).ok()?;
+            let mut buf = [0u8; 512];
+            s.recv(&mut buf).ok()?;
+            Some(started.elapsed().as_millis())
+        });
+        let show = |v: Option<u128>| v.map_or("x".to_string(), |ms| ms.to_string());
+        let _ = writeln!(out.lock(), "{} {}", show(tcp_ms), show(udp_ms));
+        std::thread::sleep(Duration::from_millis(200));
+    }
+}
+
+/// `hyprclick lag-selftest`: the Linux verify-lag checks, against a probe
+/// child process. Needs administrator rights and an internet connection.
+pub fn selftest() -> bool {
+    use std::io::{BufRead, BufReader};
+    use std::process::{Command, Stdio};
+    let Ok(exe) = std::env::current_exe() else { return false };
+    let Ok(mut child) = Command::new(exe).arg("lag-probe").stdout(Stdio::piped()).spawn() else {
+        println!("FAIL  can't start the probe");
+        return false;
+    };
+    let pid = child.id();
+    let samples: Arc<Mutex<Vec<(Instant, Option<u64>, Option<u64>)>>> = Arc::default();
+    if let Some(stdout) = child.stdout.take() {
+        let samples = samples.clone();
+        std::thread::spawn(move || {
+            for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+                let mut parts = line.split(' ').map(|v| v.parse::<u64>().ok());
+                let (tcp, udp) = (parts.next().flatten(), parts.next().flatten());
+                samples.lock().unwrap().push((Instant::now(), tcp, udp));
+            }
+        });
+    }
+    // The first full reading after now (+ settle), as (tcp, udp).
+    let reading = |settle: u64| -> (Option<u64>, Option<u64>) {
+        let since = Instant::now() + Duration::from_millis(settle);
+        for _ in 0..100 {
+            std::thread::sleep(Duration::from_millis(100));
+            // A sample is stamped when it arrives, so it started about a round trip earlier.
+            if let Some(&(_, t, u)) = samples.lock().unwrap().iter().find(|(at, _, _)| *at > since + Duration::from_millis(700)) {
+                return (t, u);
+            }
+        }
+        (None, None)
+    };
+    let mut fails = 0;
+    let mut check = |name: &str, ok: bool, detail: String| {
+        println!("{}  {name} ({detail})", if ok { "PASS" } else { "FAIL" });
+        if !ok {
+            fails += 1;
+        }
+    };
+    let near = |v: Option<u64>, want: u64, slack: u64| v.is_some_and(|v| v + slack >= want && v <= want + slack);
+    let ask = |args: &[&str]| -> String {
+        let args = args.iter().map(|a| a.to_string()).collect();
+        lagswitch::cli::run(args, &Local).map_or_else(|e| format!("error: {e}"), |o| o.output)
+    };
+    let pid_arg = pid.to_string();
+    std::thread::sleep(Duration::from_secs(2));
+
+    let (base_tcp, base_udp) = reading(0);
+    println!("--- normal: tcp {base_tcp:?} ms, udp {base_udp:?} ms");
+    if base_tcp.is_none() || base_udp.is_none() {
+        println!("FAIL  the probe can't reach 1.1.1.1");
+        let _ = child.kill();
+        return false;
+    }
+    let (bt, bu) = (base_tcp.unwrap_or(0), base_udp.unwrap_or(0));
+
+    let reply = ask(&["lag", "on", "--pid", &pid_arg, "--ms", "300", "--style", "steady", "--jitter", "0"]);
+    check("steady lag on", reply.contains("lag 300"), reply);
+    let (t, u) = reading(500);
+    check("TCP ping goes up by 300", near(t, bt + 300, 60), format!("{t:?} ms"));
+    check("UDP ping goes up by 300", near(u, bu + 300, 60), format!("{u:?} ms"));
+
+    let count = |status: &str, key: &str| -> u64 {
+        status.split(' ').find_map(|p| p.strip_prefix(key)).and_then(|v| v.parse().ok()).unwrap_or(0)
+    };
+    let reply = ask(&["lag", "on", "--pid", &pid_arg, "--ms", "600", "--style", "choke", "--jitter", "0"]);
+    check("choke on", reply.contains("style=choke"), reply.clone());
+    let (out_before, in_before) = (count(&reply, "out="), count(&reply, "in="));
+    let from = Instant::now();
+    std::thread::sleep(Duration::from_secs(6));
+    let tcps: Vec<u64> = samples.lock().unwrap().iter().filter(|(at, _, _)| *at > from + Duration::from_millis(800)).filter_map(|s| s.1).collect();
+    let high = tcps.iter().max().copied().unwrap_or(0);
+    check("choke holds outgoing packets", (300..=bt + 700).contains(&high), format!("tcp ms {tcps:?}"));
+    let status = ask(&["status"]);
+    let (out_after, in_after) = (count(&status, "out="), count(&status, "in="));
+    check(
+        "holds only outgoing packets",
+        out_after > out_before && in_after == in_before,
+        format!("out {out_before} -> {out_after}, in {in_before} -> {in_after}"),
+    );
+    let reply = ask(&["lag", "off"]);
+    check("lag off", !reply.contains(" lag "), reply);
+    let (t, _) = reading(300);
+    check("ping back to normal", near(t, bt, 60), format!("{t:?} ms"));
+
+    let from = Instant::now();
+    let reply = ask(&["freeze", "--pid", &pid_arg, "--ms", "2500", "--dir", "both"]);
+    check("app freeze on", reply.starts_with("frozen timed"), reply);
+    std::thread::sleep(Duration::from_secs(5));
+    // The request in flight when the freeze starts is lost (x), or for TCP gets
+    // through on a retransmit once the freeze ends, about 2.5 s late.
+    let first = samples.lock().unwrap().iter().find(|(at, _, _)| *at > from + Duration::from_millis(300)).map(|s| (s.1, s.2));
+    let cut = first.is_some_and(|(t, u)| t.is_none_or(|ms| ms > 2000) || u.is_none());
+    check("freeze cuts the app off", cut, format!("first tcp/udp after it started: {first:?}"));
+    check("freeze ends by itself", ask(&["status"]) == "idle", ask(&["status"]));
+    let (t, u) = reading(300);
+    check("app back online", t.is_some() && u.is_some(), format!("tcp {t:?}, udp {u:?}"));
+
+    let reply = ask(&["freeze", "--whole-pc", "--ms", "2000"]);
+    check("whole PC freeze on", reply.contains("network"), reply);
+    let blocked = std::net::TcpStream::connect_timeout(&"1.1.1.1:80".parse().expect("valid address"), Duration::from_millis(1500)).is_err();
+    check("whole PC is offline", blocked, "this process can't connect".to_string());
+    std::thread::sleep(Duration::from_millis(2500));
+    let ended = Instant::now();
+    let online = (0..5).any(|_| std::net::TcpStream::connect_timeout(&"1.1.1.1:80".parse().expect("valid address"), Duration::from_secs(3)).is_ok());
+    check("whole PC back online", online, format!("{} after it ended, {}", format!("{:.1} s", ended.elapsed().as_secs_f64()), ask(&["status"])));
+
+    let _ = child.kill();
+    println!("--- {fails} failed");
+    fails == 0
+}

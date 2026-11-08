@@ -1,15 +1,15 @@
 # hyprclick
 
-Background autoclicker for **Hyprland**, **Sway** and **KDE Plasma**, written in Rust with an egui UI. Other desktops (GNOME, plain X11) aren't supported. It also installs on [NixOS](#nixos) from its flake.
+Background autoclicker for **Hyprland**, **Sway**, **KDE Plasma** and **[Windows](#windows)**, written in Rust with an egui UI. Other Linux desktops (GNOME, plain X11) aren't supported. It also installs on [NixOS](#nixos) from its flake.
 
-| | Hyprland | Sway | KDE Plasma 6 |
-|---|---|---|---|
-| Window mode (click a window in the background) | yes | no | no, see [KDE](#kde-plasma) |
-| Cursor mode | yes | yes, without the cursor lock | yes |
-| Anti-AFK: Window | yes | no | no |
-| Anti-AFK: Gamepad | yes | yes | yes |
-| Hotkey from `hyprclick setup` / Key tab | Hyprland bind (keys + mouse buttons) | Sway bindsym (keys + mouse buttons) | KDE global shortcut (keys only) |
-| Lag tab (freeze the network, fake lag) | yes | yes | no |
+| | Hyprland | Sway | KDE Plasma 6 | Windows 10/11 |
+|---|---|---|---|---|
+| Window mode (click a window in the background) | yes | no | no, see [KDE](#kde-plasma) | no |
+| Cursor mode | yes | yes, without the cursor lock | yes | yes |
+| Anti-AFK: Window | yes | no | no | yes, switches to the game for a moment |
+| Anti-AFK: Gamepad | yes | yes | yes | no |
+| Hotkey from `hyprclick setup` / Key tab | Hyprland bind (keys + mouse buttons) | Sway bindsym (keys + mouse buttons) | KDE global shortcut (keys only) | while hyprclick runs (keys only) |
+| Lag tab (freeze the network, fake lag) | yes | yes | no | yes, run as administrator |
 
  The window takes its colors and font from the Noctalia rice (`~/.config/noctalia/rice.toml` → `palettes/<custom_palette>.json`), with the Ari palette built in as a fallback.
 
@@ -42,6 +42,17 @@ echo uinput | sudo tee /etc/modules-load.d/uinput.conf
 ```
 
 Then reboot (or log out and back in, and run `sudo modprobe uinput && sudo udevadm trigger`). The error "/dev/uinput: Permission denied (are you in the 'input' group?)" means this step is missing.
+
+## Windows
+
+Download `hyprclick-windows-x64.zip` from the [latest release](https://github.com/AriCuteGirl/hyprclick/releases/latest), unzip the whole folder and run `hyprclick.exe`. SmartScreen may warn about an unsigned app the first time: More info → Run anyway.
+
+- **Keys** are registered by hyprclick itself, so they work while it's open (minimized is fine). ALT+H, and ALT+Z/X/C/B for the Lag tab, as on Linux. Mouse buttons can't be hotkeys on Windows.
+- **Cursor mode** clicks with `SendInput`. The default target is `RobloxPlayerBeta.exe`.
+- **Anti-AFK** (Window method) switches to the game every few minutes, wiggles the mouse or right-clicks, and switches back to what you were using. It skips that while you're playing.
+- **The Lag tab** needs hyprclick running as administrator, and has a button to restart that way. It uses [WinDivert](https://reqrypt.org/windivert.html), whose `WinDivert.dll` and `WinDivert64.sys` come in the zip and have to stay next to the exe. Freezes, Whole PC, One app and fake lag (steady and choke) behave as on Linux: the app is matched by the network ports its processes own, re-read twice a second, so it follows the game across restarts. While a freeze or fake lag is on, the rest of the PC's traffic passes through hyprclick too, unchanged.
+
+To build the zip on Linux: `bash scripts/build-windows.sh` (needs rustup's `x86_64-pc-windows-gnu` target and Nix).
 
 ## Sway
 

@@ -1,6 +1,6 @@
 #!/bin/bash
 # Cross-build the Windows zip on Linux: hyprclick.exe plus WinDivert's DLL,
-# driver and license. Needs rustup's x86_64-pc-windows-gnu target and Nix
+# driver and license, and the icon font. Needs rustup's x86_64-pc-windows-gnu target and Nix
 # (for MinGW's pthreads, which rust's windows-gnu target links).
 set -eu
 cd "$(dirname "$0")/.."
@@ -29,5 +29,10 @@ cp target/x86_64-pc-windows-gnu/release/hyprclick.exe "$OUT/hyprclick/"
 cp "$src/x64/WinDivert.dll" "$src/x64/WinDivert64.sys" "$OUT/hyprclick/"
 cp "$src/LICENSE" "$OUT/hyprclick/WinDivert-LICENSE.txt"
 cp windows/README.txt "$OUT/hyprclick/README.txt"
+# The window's icons. Windows has no Nerd Font of its own.
+symbols=$(nix build --no-link --print-out-paths nixpkgs#nerd-fonts.symbols-only)
+cp "$symbols/share/fonts/truetype/NerdFonts/Symbols/SymbolsNerdFont-Regular.ttf" "$OUT/hyprclick/"
+cp windows/FONT-LICENSE.txt "$OUT/hyprclick/"
+chmod u+w "$OUT/hyprclick/"*
 (cd "$OUT" && rm -f hyprclick-windows-x64.zip && zip -qr hyprclick-windows-x64.zip hyprclick)
 ls -l "$OUT/hyprclick" "$OUT/hyprclick-windows-x64.zip"

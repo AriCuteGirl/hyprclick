@@ -88,11 +88,20 @@ fn rice_value(dir: &PathBuf, key: &str) -> Option<String> {
 /// The icons are Nerd Font symbols. A rice font usually has them; this is the
 /// standalone fallback (nerd-fonts.symbols-only on NixOS).
 pub fn symbols_font() -> Option<PathBuf> {
+    if cfg!(windows) {
+        // The Windows zip carries it next to the exe.
+        let path = std::env::current_exe().ok()?.parent()?.join("SymbolsNerdFont-Regular.ttf");
+        return path.exists().then_some(path);
+    }
     font_file("Symbols Nerd Font", "Regular")
 }
 
 /// For the few characters egui's own fonts lack, like the ● in status pills.
 pub fn fallback_font() -> Option<PathBuf> {
+    if cfg!(windows) {
+        let fonts = std::env::var_os("WINDIR").map_or_else(|| PathBuf::from(r"C:\Windows"), PathBuf::from).join("Fonts");
+        return Some(fonts.join("seguisym.ttf")).filter(|p| p.exists());
+    }
     font_file("DejaVu Sans", "Book")
 }
 

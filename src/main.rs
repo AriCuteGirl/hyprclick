@@ -68,6 +68,10 @@ fn main() {
         Some("setup") => setup(std::env::args().nth(2)),
         Some("afk") => afk::run_terminal(&Config::load()),
         Some("pad") => afk::run_pad_service(),
+        #[cfg(windows)]
+        Some("lag-probe") => winlag::probe(),
+        #[cfg(windows)]
+        Some("lag-selftest") => std::process::exit(if winlag::selftest() { 0 } else { 1 }),
         _ => print!("{USAGE}"),
     }
 }

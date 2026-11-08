@@ -126,6 +126,9 @@ unsafe extern "system" {
     fn GetWindowRect(hwnd: HWND, rect: *mut RECT) -> BOOL;
     fn GetForegroundWindow() -> HWND;
     fn SetForegroundWindow(hwnd: HWND) -> BOOL;
+    fn BringWindowToTop(hwnd: HWND) -> BOOL;
+    fn AttachThreadInput(attach: u32, to: u32, on: BOOL) -> BOOL;
+    fn SwitchToThisWindow(hwnd: HWND, alt_tab: BOOL);
     fn ShowWindow(hwnd: HWND, cmd: i32) -> BOOL;
     fn GetCursorPos(point: *mut POINT) -> BOOL;
     fn SendInput(count: u32, inputs: *const INPUT, size: i32) -> u32;
@@ -190,9 +193,7 @@ pub const MOD_WIN: u32 = 0x8;
 pub const MOD_NOREPEAT: u32 = 0x4000;
 
 const INPUT_MOUSE: u32 = 0;
-const INPUT_KEYBOARD: u32 = 1;
 const MOUSEEVENTF_MOVE: u32 = 0x1;
-const KEYEVENTF_KEYUP: u32 = 0x2;
 const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
 const TH32CS_SNAPPROCESS: u32 = 0x2;
 const INVALID_HANDLE: HANDLE = -1;
@@ -202,7 +203,6 @@ const TCP_TABLE_OWNER_PID_ALL: i32 = 5;
 const UDP_TABLE_OWNER_PID: i32 = 1;
 const ERROR_INSUFFICIENT_BUFFER: u32 = 122;
 const SW_RESTORE: i32 = 9;
-const VK_MENU: u16 = 0x12;
 
 /// A NUL-terminated UTF-16 copy, for the W calls.
 pub fn wide(text: &str) -> Vec<u16> {
@@ -400,7 +400,13 @@ pub fn cursor_pos() -> Option<(f64, f64)> {
     (unsafe { GetCursorPos(&mut p) } != 0).then_some((p.x as f64, p.y as f64))
 }
 
+/// GetTickCount when hyprclick last sent input, so its own wiggles don't
+/// count as you using the PC.
+static LAST_SENT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
 fn send(inputs: &[INPUT]) -> Result<(), String> {
+    // SAFETY: no preconditions.
+    LAST_SENT.store(unsafe { GetTickCount() }, std::sync::atomic::Ordering::Relaxed);
     // SAFETY: the slice and its length go together, and INPUT's size is passed.
     let sent = unsafe { SendInput(inputs.len() as u32, inputs.as_ptr(), std::mem::size_of::<INPUT>() as i32) };
     if sent as usize == inputs.len() {
@@ -412,11 +418,6 @@ fn send(inputs: &[INPUT]) -> Result<(), String> {
 
 fn mouse(dx: i32, dy: i32, flags: u32) -> INPUT {
     INPUT { kind: INPUT_MOUSE, u: INPUT_0 { mi: MOUSEINPUT { dx, dy, mouseData: 0, dwFlags: flags, time: 0, dwExtraInfo: 0 } } }
-}
-
-fn key(vk: u16, up: bool) -> INPUT {
-    let flags = if up { KEYEVENTF_KEYUP } else { 0 };
-    INPUT { kind: INPUT_KEYBOARD, u: INPUT_0 { ki: KEYBDINPUT { wVk: vk, wScan: 0, dwFlags: flags, time: 0, dwExtraInfo: 0 } } }
 }
 
 /// Press or release a mouse button, by its Linux button code (BTN_LEFT = 272...).
@@ -434,13 +435,18 @@ pub fn mouse_move(dx: i32, dy: i32) -> Result<(), String> {
     send(&[mouse(dx, dy, MOUSEEVENTF_MOVE)])
 }
 
-/// Milliseconds since the last keyboard or mouse input anywhere.
+/// Milliseconds since you last touched the keyboard or mouse. Input
+/// hyprclick sent itself doesn't count.
 pub fn idle_ms() -> u32 {
     let mut info = LASTINPUTINFO { cbSize: std::mem::size_of::<LASTINPUTINFO>() as u32, dwTime: 0 };
     // SAFETY: info has its size set and is valid for writing.
     unsafe {
         if GetLastInputInfo(&mut info) == 0 {
             return 0;
+        }
+        let ours = LAST_SENT.load(std::sync::atomic::Ordering::Relaxed);
+        if info.dwTime.wrapping_sub(ours) < 1000 {
+            return u32::MAX;
         }
         GetTickCount().wrapping_sub(info.dwTime)
     }
@@ -453,17 +459,43 @@ pub fn key_down(vk: u32) -> bool {
 }
 
 /// Bring a window to the front. Windows only lets the foreground app do
-/// that, and a tapped ALT counts as user input that lifts the restriction.
+/// that, so join the foreground window's input queue for a moment, which
+/// counts as being it.
 pub fn focus(address: &str) -> bool {
     let Some(hwnd) = parse_address(address) else { return false };
-    // SAFETY: plain calls on a window handle; a stale one just fails.
+    // SAFETY: plain calls on window handles and thread ids; stale ones just fail,
+    // and the input queues are detached again before returning.
     unsafe {
         if IsIconic(hwnd) != 0 {
             ShowWindow(hwnd, SW_RESTORE);
         }
-        let _ = send(&[key(VK_MENU, false), key(VK_MENU, true)]);
-        SetForegroundWindow(hwnd) != 0
+        let front = GetForegroundWindow();
+        let front_thread = GetWindowThreadProcessId(front, std::ptr::null_mut());
+        let me = GetCurrentThreadId();
+        let attached = front_thread != 0 && front_thread != me && AttachThreadInput(me, front_thread, 1) != 0;
+        BringWindowToTop(hwnd);
+        SetForegroundWindow(hwnd);
+        if attached {
+            AttachThreadInput(me, front_thread, 0);
+        }
+        if in_front(hwnd) {
+            return true;
+        }
+        // What Alt+Tab uses; it gets past windows that refuse the queue trick.
+        SwitchToThisWindow(hwnd, 1);
+        in_front(hwnd)
     }
+}
+
+/// Windows switches the front window asynchronously, so give it a moment.
+fn in_front(hwnd: HWND) -> bool {
+    for _ in 0..15 {
+        if foreground() == hwnd {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    false
 }
 
 pub fn focus_class(class: &str) {
@@ -480,7 +512,8 @@ pub fn poke(address: &str, dx: i32, dy: i32, right_click: bool, hold: Duration) 
         return Ok(false);
     }
     if !focus(address) {
-        return Err("Windows didn't let hyprclick switch to the game".to_string());
+        let front = window_title(foreground());
+        return Err(format!("Windows didn't let hyprclick switch to the game (\"{front}\" is holding the front)"));
     }
     std::thread::sleep(Duration::from_millis(150));
     if right_click {
@@ -493,8 +526,10 @@ pub fn poke(address: &str, dx: i32, dy: i32, right_click: bool, hold: Duration) 
         mouse_move(-dx, -dy)?;
     }
     std::thread::sleep(Duration::from_millis(100));
-    if before != 0 && Some(format!("{before:#x}")).as_deref() != Some(address) {
-        focus(&format!("{before:#x}"));
+    // Best effort: the nudge is done, and staying on the game while you're away does no harm.
+    let back = format!("{before:#x}");
+    if before != 0 && back != address {
+        focus(&back);
     }
     Ok(true)
 }
