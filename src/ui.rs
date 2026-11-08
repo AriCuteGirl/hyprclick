@@ -933,8 +933,14 @@ impl App {
                     crate::overlay::ensure_running();
                 }
                 ui.label(RichText::new("Show on screen").color(pal().text))
-                    .on_hover_text("A banner above the middle of the screen while frozen or lagging, with the time left");
+                    .on_hover_text("A banner on screen while frozen or lagging, with the time left");
             });
+            #[cfg(target_os = "linux")]
+            if c.cfg.lag_overlay {
+                use crate::config::OverlayPlace;
+                let places = [(OverlayPlace::Top, "Top".to_string()), (OverlayPlace::Middle, "Middle".to_string()), (OverlayPlace::Bottom, "Bottom".to_string())];
+                segmented(ui, "overlay_place", &mut c.cfg.lag_overlay_place, &places);
+            }
 
             // Write once a drag ends, where the keybinds will read it.
             if self.lag_saved.as_ref() != Some(&settings) && !ui.input(|i| i.pointer.any_down()) {

@@ -5,6 +5,7 @@
 //! there's something to show. It asks lagswitch's daemon for its status ten
 //! times a second, the same `status` line the CLI prints.
 
+use crate::config::{Config, OverlayPlace};
 use crate::lag::{self, FakeLag, Status};
 use ab_glyph::{Font, FontVec, PxScale, ScaleFont};
 use smithay_client_toolkit::{
@@ -32,8 +33,9 @@ use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
 use std::time::{Duration, Instant};
 
-/// The surface sits centered on the screen; the banner fills its top
-/// `BANNER_H` rows and the rest stays clear, which puts the banner's middle
+/// At the top or bottom the surface is just the banner. In the middle it is
+/// centered on the screen and `H` tall; the banner fills its top `BANNER_H`
+/// rows and the rest stays clear, which puts the banner's middle
 /// `(H - BANNER_H) / 2` = 120 px above the crosshair.
 const W: u32 = 250;
 const H: u32 = 300;
@@ -143,7 +145,7 @@ fn single_instance() -> std::io::Result<std::os::unix::net::UnixListener> {
 
 /// Start the overlay in the background if it's turned on and not running yet.
 pub fn ensure_running() {
-    if !crate::config::Config::load().lag_overlay || !lag::installed() {
+    if !Config::load().lag_overlay || !lag::installed() {
         return;
     }
     let Ok(exe) = std::env::current_exe() else { return };
@@ -177,6 +179,7 @@ fn serve() -> Result<(), String> {
         pool,
         fonts,
         layer: None,
+        place: Config::load().lag_overlay_place,
         configured: false,
         shown: None,
         want: None,
@@ -185,9 +188,15 @@ fn serve() -> Result<(), String> {
     let mut enabled = (Instant::now(), true);
     loop {
         let now = Instant::now();
-        // The Lag tab's checkbox; checked once a second.
+        // The Lag tab's switch and place; checked once a second.
         if now.duration_since(enabled.0) >= Duration::from_secs(1) {
-            enabled = (now, crate::config::Config::load().lag_overlay);
+            let cfg = Config::load();
+            enabled = (now, cfg.lag_overlay);
+            if cfg.lag_overlay_place != overlay.place {
+                overlay.place = cfg.lag_overlay_place;
+                // Opened again in the new place on the next sync.
+                overlay.layer = None;
+            }
         }
         let banner = ask_status().and_then(|text| {
             let fake_lag = lag::parse_fake_lag(&text);
@@ -208,6 +217,7 @@ struct Overlay {
     pool: SlotPool,
     fonts: Fonts,
     layer: Option<LayerSurface>,
+    place: OverlayPlace,
     configured: bool,
     /// What's on screen now, and what should be.
     shown: Option<Banner>,
@@ -233,11 +243,24 @@ impl Overlay {
         let surface = self.compositor.create_surface(qh);
         // No output given: the compositor puts it on the focused monitor.
         let layer = self.layer_shell.create_layer_surface(qh, surface, Layer::Overlay, Some("hyprclick-overlay"), None);
-        // No anchors centers it; -1 centers it on the whole screen, bars or not.
-        layer.set_anchor(Anchor::empty());
-        layer.set_exclusive_zone(-1);
+        match self.place {
+            // Zone 0 keeps it clear of bars at that edge.
+            OverlayPlace::Top => {
+                layer.set_anchor(Anchor::TOP);
+                layer.set_margin(16, 0, 0, 0);
+            }
+            OverlayPlace::Bottom => {
+                layer.set_anchor(Anchor::BOTTOM);
+                layer.set_margin(0, 0, 140, 0);
+            }
+            // No anchors centers it; -1 centers it on the whole screen, bars or not.
+            OverlayPlace::Middle => {
+                layer.set_anchor(Anchor::empty());
+                layer.set_exclusive_zone(-1);
+            }
+        }
         layer.set_keyboard_interactivity(KeyboardInteractivity::None);
-        layer.set_size(W, H);
+        layer.set_size(W, self.height());
         // An empty input region lets every click through to the game.
         if let Ok(region) = Region::new(&self.compositor) {
             layer.wl_surface().set_input_region(Some(region.wl_region()));
@@ -248,16 +271,22 @@ impl Overlay {
         self.shown = None;
     }
 
+    fn height(&self) -> u32 {
+        if self.place == OverlayPlace::Middle { H } else { BANNER_H }
+    }
+
     fn draw(&mut self) {
+        let height = self.height() as i32;
         let (Some(layer), Some(banner)) = (&self.layer, &self.want) else { return };
-        let Ok((buffer, canvas)) = self.pool.create_buffer(W as i32, H as i32, (W * 4) as i32, wl_shm::Format::Argb8888) else {
+        let Ok((buffer, canvas)) = self.pool.create_buffer(W as i32, height, (W * 4) as i32, wl_shm::Format::Argb8888) else {
             return;
         };
+        // The banner is in the top rows, so a shorter surface takes just those.
         let pixels = render(banner, &self.fonts);
         for (dst, px) in canvas.chunks_exact_mut(4).zip(pixels) {
             dst.copy_from_slice(&px.to_le_bytes());
         }
-        layer.wl_surface().damage_buffer(0, 0, W as i32, H as i32);
+        layer.wl_surface().damage_buffer(0, 0, W as i32, height);
         if buffer.attach_to(layer.wl_surface()).is_err() {
             return;
         }
