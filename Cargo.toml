@@ -9,10 +9,14 @@ dirs = "7.0.0"
 eframe = "0.37.0"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
+# Text for the lag overlay; already built for eframe.
+ab_glyph = "0.2.32"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 evdev = "0.13.2"
 zbus = { version = "5", default-features = false, features = ["blocking-api", "async-io"] }
+# The lag overlay's Wayland layer surface; already built for eframe.
+smithay-client-toolkit = { version = "0.20.0", default-features = false, features = ["calloop"] }
 
 # On Windows the Lag tab runs lagswitch's logic in-process, over WinDivert.
 [target.'cfg(windows)'.dependencies]

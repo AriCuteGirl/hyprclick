@@ -15,6 +15,7 @@ mod ipc;
 #[cfg(target_os = "linux")]
 mod kde;
 mod lag;
+mod overlay;
 mod setup;
 mod sway;
 mod theme;
@@ -45,6 +46,8 @@ usage:
   hyprclick afk               anti-AFK in this terminal (target from the app)
   hyprclick pad               virtual gamepad service for Gamepad anti-AFK
                               (setup starts it at login, before Roblox)
+  hyprclick overlay           show lagswitch freezes and fake lag on screen
+                              (setup starts it at login)
 ";
 
 fn main() {
@@ -68,8 +71,12 @@ fn main() {
         Some("setup") => setup(std::env::args().nth(2)),
         Some("afk") => afk::run_terminal(&Config::load()),
         Some("pad") => afk::run_pad_service(),
+        #[cfg(target_os = "linux")]
+        Some("overlay") => overlay::run(),
         #[cfg(windows)]
         Some("lag-probe") => winlag::probe(),
+        #[cfg(windows)]
+        Some("overlay-demo") => overlay::demo(),
         #[cfg(windows)]
         Some("lag-selftest") => std::process::exit(if winlag::selftest() { 0 } else { 1 }),
         _ => print!("{USAGE}"),
@@ -164,6 +171,7 @@ fn gui() {
     if let Err(e) = hotkeys::reload() {
         desktop::notify(&e);
     }
+    overlay::ensure_running();
     ui::run();
     ipc::cleanup();
 }

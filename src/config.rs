@@ -30,6 +30,18 @@ pub enum AfkAction {
     RightClick,
 }
 
+/// Where `hyprclick overlay` puts its banner.
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum OverlayPlace {
+    /// Top center, below any bar.
+    #[default]
+    Top,
+    /// A bit above the crosshair.
+    Middle,
+    /// Above the bottom edge, clear of most hotbars.
+    Bottom,
+}
+
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum MouseButton {
     #[default]
@@ -93,6 +105,11 @@ pub struct Config {
     pub lag_hold_key: crate::hotkey::Hotkey,
     /// Turns fake lag on and off.
     pub lag_fake_key: crate::hotkey::Hotkey,
+    /// Show freezes and fake lag on screen (`hyprclick overlay`, Linux).
+    pub lag_overlay: bool,
+    pub lag_overlay_place: OverlayPlace,
+    /// Lag keys pop up a notification saying what they did.
+    pub lag_notify: bool,
 }
 
 impl Default for Config {
@@ -122,6 +139,9 @@ impl Default for Config {
             lag_toggle_key: crate::hotkey::Hotkey { mods: vec!["ALT".into()], key: "X".into() },
             lag_hold_key: crate::hotkey::Hotkey { mods: vec!["ALT".into()], key: "C".into() },
             lag_fake_key: crate::hotkey::Hotkey { mods: vec!["ALT".into()], key: "B".into() },
+            lag_overlay: true,
+            lag_overlay_place: OverlayPlace::Top,
+            lag_notify: true,
         }
     }
 }

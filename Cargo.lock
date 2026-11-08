@@ -1507,6 +1507,7 @@ checksum = "7f24254aa9a54b5c858eaee2f5bccdb46aaf0e486a595ed5fd8f86ba55232a70"
 name = "hyprclick"
 version = "0.4.0"
 dependencies = [
+ "ab_glyph",
  "chrono",
  "dirs",
  "eframe",
@@ -1514,6 +1515,7 @@ dependencies = [
  "lagswitch",
  "serde",
  "serde_json",
+ "smithay-client-toolkit 0.20.0",
  "zbus",
 ]
 

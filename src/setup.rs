@@ -36,10 +36,11 @@ pub fn find_program(name: &str) -> Option<PathBuf> {
     found.iter().find(|p| !p.starts_with("/nix/store")).or(found.first()).cloned()
 }
 
-/// lagswitch as the binds run it: errors show as a notification, since nobody
-/// sees a keybind's output.
-fn notifying(cli: &Path) -> String {
-    format!("{} --notify", cli.display())
+/// lagswitch as the binds run it. With --notify it says what each key did, and
+/// any error, as a notification, since nobody sees a keybind's output. The Lag
+/// tab can turn that off; the overlay still shows what's going on.
+fn notifying(cli: &Path, cfg: &Config) -> String {
+    if cfg.lag_notify { format!("{} --notify", cli.display()) } else { cli.display().to_string() }
 }
 
 /// Path of the binary the hotkey should run.
@@ -119,6 +120,8 @@ fn apply_sway(cfg: &Config) -> Result<String, String> {
     sway::msg(&["reload"])?;
     // Start the pad now too, so it's there before the next Roblox launch.
     let _ = crate::afk::ensure_pad_service();
+    #[cfg(target_os = "linux")]
+    crate::overlay::ensure_running();
     let mut report = bound_report(cfg, &file);
     if cfg.hotkey.bare_mouse() {
         report += "\nnote: without a modifier that mouse button only toggles hyprclick now";
@@ -140,7 +143,7 @@ fn sway_file(cfg: &Config) -> String {
         exe = exe(),
     );
     if let Some(cli) = lag::cli() {
-        out += &sway_lag_binds(cfg, &notifying(&cli));
+        out += &sway_lag_binds(cfg, &notifying(&cli, cfg));
     }
     out
 }
@@ -164,6 +167,7 @@ fn sway_lag_binds(cfg: &Config, cli: &str) -> String {
     out += &bind(&cfg.lag_hold_key, false, "hold start");
     out += &bind(&cfg.lag_hold_key, true, "hold stop");
     out += &bind(&cfg.lag_fake_key, false, "lag toggle");
+    out += &format!("\n# Shows freezes and fake lag on screen (off in the Lag tab).\nexec {} overlay\n", exe());
     out
 }
 
@@ -206,6 +210,8 @@ fn apply_hyprland(cfg: &Config) -> Result<String, String> {
 
     // Start the pad now too, so it's there before the next Roblox launch.
     let _ = crate::afk::ensure_pad_service();
+    #[cfg(target_os = "linux")]
+    crate::overlay::ensure_running();
 
     let mut report = bound_report(cfg, &managed);
     let dupes = other_binds(&dir, &managed, &main);
@@ -266,6 +272,8 @@ fn apply_kde(hotkey: &Hotkey) -> Result<String, String> {
         report += &format!("\npad autostart skipped: {e}");
     }
     let _ = crate::afk::ensure_pad_service();
+    #[cfg(target_os = "linux")]
+    crate::overlay::ensure_running();
     Ok(report)
 }
 
@@ -355,7 +363,7 @@ fn lua_file(cfg: &Config) -> String {
         exe = exe(),
     );
     if let Some(cli) = lag::cli() {
-        out += &lua_lag_binds(cfg, &notifying(&cli));
+        out += &lua_lag_binds(cfg, &notifying(&cli, cfg));
     }
     out
 }
@@ -400,6 +408,11 @@ fn lua_lag_binds(cfg: &Config, cli: &str) -> String {
             "hl.bind(\"{combo}\", hl.dsp.exec_cmd(\"{cli} hold stop\"), {{ release = true, non_consuming = true, description = \"lagswitch: Release hold\" }})\n"
         );
     }
+    out += &format!(
+        "\n-- Shows freezes and fake lag on screen (off in the Lag tab).\n\
+         hl.on(\"hyprland.start\", function() hl.exec_cmd(\"{} overlay\") end)\n",
+        exe()
+    );
     out
 }
 
@@ -420,6 +433,7 @@ fn conf_lag_binds(cfg: &Config, cli: &str) -> String {
     for (mods, key) in lag_mod_releases(&cfg.lag_hold_key) {
         out += &format!("bindrn = {mods}, {key}, exec, {cli} hold stop\n");
     }
+    out += &format!("\n# Shows freezes and fake lag on screen (off in the Lag tab).\nexec-once = {} overlay\n", exe());
     out
 }
 
@@ -441,7 +455,7 @@ fn conf_file(cfg: &Config, rules: bool) -> String {
         );
     }
     if let Some(cli) = lag::cli() {
-        out += &conf_lag_binds(cfg, &notifying(&cli));
+        out += &conf_lag_binds(cfg, &notifying(&cli, cfg));
     }
     out
 }
@@ -554,6 +568,14 @@ mod tests {
         assert_eq!(mouse.sway(), "Ctrl+Shift+button8");
         assert_eq!(sway_mouse_flag(&mouse), "--whole-window ");
         assert_eq!(Hotkey { mods: vec!["SUPER".into()], key: "F5".into() }.sway(), "Mod4+F5");
+    }
+
+    #[test]
+    fn notifications_can_be_turned_off() {
+        let cli = Path::new("/usr/local/bin/lagswitch");
+        assert_eq!(notifying(cli, &cfg()), "/usr/local/bin/lagswitch --notify");
+        let quiet = Config { lag_notify: false, ..cfg() };
+        assert_eq!(notifying(cli, &quiet), "/usr/local/bin/lagswitch");
     }
 
     #[test]
