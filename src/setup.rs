@@ -15,7 +15,9 @@
 use crate::config::Config;
 use crate::desktop::{self, Desktop};
 use crate::hotkey::Hotkey;
-use crate::{hypr, kde, lag, sway, APP_ID};
+#[cfg(target_os = "linux")]
+use crate::kde;
+use crate::{hypr, lag, sway, APP_ID};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -60,7 +62,12 @@ pub fn apply(cfg: &Config) -> Result<String, String> {
     match desktop::get() {
         Desktop::Hyprland => apply_hyprland(cfg),
         Desktop::Sway => apply_sway(cfg),
+        #[cfg(target_os = "linux")]
         Desktop::Kde => apply_kde(&cfg.hotkey),
+        #[cfg(windows)]
+        Desktop::Windows => crate::hotkeys::reload(),
+        #[allow(unreachable_patterns)]
+        _ => Err(format!("hotkeys aren't set up on {}", desktop::get().name())),
     }
 }
 
@@ -211,9 +218,12 @@ fn apply_hyprland(cfg: &Config) -> Result<String, String> {
     Ok(report)
 }
 
+#[cfg(target_os = "linux")]
 const SHORTCUT_FILE: &str = "hyprclick-toggle.desktop";
+#[cfg(target_os = "linux")]
 const RULE_GROUP: &str = "hyprclick";
 
+#[cfg(target_os = "linux")]
 fn apply_kde(hotkey: &Hotkey) -> Result<String, String> {
     let key = hotkey.qt_key()?;
     let exe = exe();
@@ -259,6 +269,7 @@ fn apply_kde(hotkey: &Hotkey) -> Result<String, String> {
     Ok(report)
 }
 
+#[cfg(target_os = "linux")]
 /// KWin rule: open hyprclick at its size, centered. KDE windows float anyway.
 fn kde_window_rule() -> Result<(), String> {
     let (w, h) = WINDOW_SIZE;
@@ -291,6 +302,7 @@ fn kde_window_rule() -> Result<(), String> {
     Ok(())
 }
 
+#[cfg(target_os = "linux")]
 fn kwriteconfig(group: &str, key: &str, value: &str) -> Result<(), String> {
     let out = Command::new("kwriteconfig6")
         .args(["--file", "kwinrulesrc", "--group", group, "--key", key, value])
@@ -299,6 +311,7 @@ fn kwriteconfig(group: &str, key: &str, value: &str) -> Result<(), String> {
     if out.status.success() { Ok(()) } else { Err(String::from_utf8_lossy(&out.stderr).trim().to_string()) }
 }
 
+#[cfg(target_os = "linux")]
 fn kreadconfig(group: &str, key: &str) -> Result<String, String> {
     let out = Command::new("kreadconfig6")
         .args(["--file", "kwinrulesrc", "--group", group, "--key", key])
@@ -307,6 +320,7 @@ fn kreadconfig(group: &str, key: &str) -> Result<String, String> {
     Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
+#[cfg(target_os = "linux")]
 /// Start the pad service at login, before Roblox.
 fn kde_autostart(exe: &str) -> Result<(), String> {
     let dir = dirs::config_dir().ok_or("no config dir")?.join("autostart");
@@ -458,6 +472,13 @@ fn ensure_line(file: &Path, needle: &str, block: &str) -> Result<(), String> {
 }
 
 /// Give the owner write permission. Only works on a file you own.
+#[cfg(windows)]
+fn make_writable(_: &Path) -> bool {
+    false
+}
+
+/// Give the owner write permission. Only works on a file you own.
+#[cfg(unix)]
 fn make_writable(file: &Path) -> bool {
     use std::os::unix::fs::PermissionsExt;
     let Ok(meta) = std::fs::metadata(file) else { return false };

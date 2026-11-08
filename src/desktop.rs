@@ -10,6 +10,7 @@ pub enum Desktop {
     Hyprland,
     Sway,
     Kde,
+    Windows,
 }
 
 static CURRENT: OnceLock<Option<Desktop>> = OnceLock::new();
@@ -17,6 +18,9 @@ static CURRENT: OnceLock<Option<Desktop>> = OnceLock::new();
 /// The running compositor, if it's one hyprclick supports.
 pub fn detect() -> Option<Desktop> {
     *CURRENT.get_or_init(|| {
+        if cfg!(windows) {
+            return Some(Desktop::Windows);
+        }
         if std::env::var_os("HYPRLAND_INSTANCE_SIGNATURE").is_some() {
             return Some(Desktop::Hyprland);
         }
@@ -42,6 +46,7 @@ impl Desktop {
             Desktop::Hyprland => "Hyprland",
             Desktop::Sway => "Sway",
             Desktop::Kde => "KDE Plasma",
+            Desktop::Windows => "Windows",
         }
     }
 
@@ -52,6 +57,7 @@ impl Desktop {
             Desktop::Hyprland => Ok(()),
             Desktop::Sway => Err("Window mode needs Hyprland: Sway can't send clicks to a window in the background. Use Cursor mode.".into()),
             Desktop::Kde => Err("Window mode needs Hyprland: KWin can't send clicks to a window in the background. Use Cursor mode.".into()),
+            Desktop::Windows => Err("Window mode needs Hyprland: games on Windows ignore clicks sent to a background window. Use Cursor mode.".into()),
         }
     }
 }
@@ -84,7 +90,12 @@ pub fn clients() -> Vec<Client> {
     match get() {
         Desktop::Hyprland => crate::hypr::clients(),
         Desktop::Sway => crate::sway::clients(),
+        #[cfg(target_os = "linux")]
         Desktop::Kde => crate::kde::clients(),
+        #[cfg(windows)]
+        Desktop::Windows => crate::win::clients(),
+        #[allow(unreachable_patterns)]
+        _ => Vec::new(),
     }
 }
 
@@ -92,7 +103,12 @@ pub fn cursor_pos() -> Option<(f64, f64)> {
     match get() {
         Desktop::Hyprland => crate::hypr::cursor_pos(),
         Desktop::Sway => crate::sway::cursor_pos(),
+        #[cfg(target_os = "linux")]
         Desktop::Kde => crate::kde::cursor_pos(),
+        #[cfg(windows)]
+        Desktop::Windows => crate::win::cursor_pos(),
+        #[allow(unreachable_patterns)]
+        _ => None,
     }
 }
 
@@ -101,7 +117,12 @@ pub fn cursor_pos_now() -> Option<(f64, f64)> {
     match get() {
         Desktop::Hyprland => crate::hypr::cursor_pos(),
         Desktop::Sway => crate::sway::cursor_pos(),
+        #[cfg(target_os = "linux")]
         Desktop::Kde => crate::kde::cursor_pos_now(),
+        #[cfg(windows)]
+        Desktop::Windows => crate::win::cursor_pos(),
+        #[allow(unreachable_patterns)]
+        _ => None,
     }
 }
 
@@ -109,7 +130,12 @@ pub fn active_address() -> Option<String> {
     match get() {
         Desktop::Hyprland => crate::hypr::active_address(),
         Desktop::Sway => crate::sway::active_address(),
+        #[cfg(target_os = "linux")]
         Desktop::Kde => crate::kde::active_address(),
+        #[cfg(windows)]
+        Desktop::Windows => crate::win::active_address(),
+        #[allow(unreachable_patterns)]
+        _ => None,
     }
 }
 
@@ -131,7 +157,12 @@ pub fn notify(text: &str) {
     match get() {
         Desktop::Hyprland => crate::hypr::notify(text),
         Desktop::Sway => crate::sway::notify(text),
+        #[cfg(target_os = "linux")]
         Desktop::Kde => crate::kde::notify(text),
+        #[cfg(windows)]
+        Desktop::Windows => crate::win::notify(text),
+        #[allow(unreachable_patterns)]
+        _ => {}
     }
 }
 
@@ -142,6 +173,11 @@ pub fn focus_app() {
             let _ = crate::hypr::request(&format!("dispatch hl.dsp.focus({{window=\"class:^({})$\"}})", crate::APP_ID));
         }
         Desktop::Sway => crate::sway::focus_class(crate::APP_ID),
+        #[cfg(target_os = "linux")]
         Desktop::Kde => crate::kde::activate_class(crate::APP_ID),
+        #[cfg(windows)]
+        Desktop::Windows => crate::win::focus_class("hyprclick.exe"),
+        #[allow(unreachable_patterns)]
+        _ => {}
     }
 }

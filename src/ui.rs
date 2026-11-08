@@ -686,6 +686,7 @@ impl App {
             let hint = match desktop::get() {
                 Desktop::Hyprland => "Side mouse buttons work too. SUPER combos and keys Hyprland already uses can't be recorded, type those.",
                 Desktop::Sway => "Goes into ~/.config/sway/hyprclick.conf. Side mouse buttons work too. SUPER combos can't be recorded, type those.",
+                Desktop::Windows => "Works anywhere while hyprclick is open (minimized is fine). Mouse buttons can't be hotkeys on Windows.",
                 Desktop::Kde => "Becomes a KDE global shortcut (System Settings → Shortcuts). KDE can't bind mouse buttons. SUPER (Meta) combos can't be recorded, type those.",
             };
             ui.label(RichText::new(hint).color(pal().weak).size(11.0));
@@ -737,12 +738,31 @@ impl App {
     fn lag_card(&mut self, ui: &mut Ui, c: &mut Controller) {
         card(ui, None, |ui| {
             if !lag::installed() {
-                ui.label(RichText::new("lagswitch isn't installed").color(pal().text));
+                let (title, help) = if desktop::get() == Desktop::Windows {
+                    ("WinDivert is missing", "Keep WinDivert.dll and WinDivert64.sys in the same folder as hyprclick.exe, as they come in the zip.")
+                } else {
+                    ("lagswitch isn't installed", "It's a separate root service, so hyprclick itself never needs root. Install it with lagswitch/scripts/install.sh from the hyprclick repo, or on NixOS turn on services.lagswitch from its flake.")
+                };
+                ui.label(RichText::new(title).color(pal().text));
+                ui.label(RichText::new(help).color(pal().weak).size(11.0));
+                return;
+            }
+            if lag::needs_admin() {
+                ui.label(RichText::new("The Lag tab needs administrator rights").color(pal().text));
                 ui.label(
-                    RichText::new("It's a separate root service, so hyprclick itself never needs root. Install it with lagswitch/scripts/install.sh from the hyprclick repo, or on NixOS turn on services.lagswitch from its flake.")
+                    RichText::new("Windows only lets an administrator hold back or drop network packets. The clicker works either way.")
                         .color(pal().weak)
                         .size(11.0),
                 );
+                if ui.button("Restart as administrator").clicked() {
+                    if lag::restart_as_admin() {
+                        std::process::exit(0);
+                    }
+                    self.lag_msg = Some("Windows didn't restart hyprclick as administrator".to_string());
+                }
+                if let Some(msg) = &self.lag_msg {
+                    ui.label(RichText::new(format!("⚠ {msg}")).color(pal().bad).size(11.0));
+                }
                 return;
             }
             self.lag.show();

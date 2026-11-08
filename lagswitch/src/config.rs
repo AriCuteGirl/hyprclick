@@ -3,7 +3,7 @@
 use std::fs;
 use std::path::PathBuf;
 
-use crate::delay::Style;
+use crate::shape::Style;
 use crate::rules::Direction;
 use crate::timer;
 
@@ -41,12 +41,13 @@ impl Default for Config {
 }
 
 fn path() -> Result<PathBuf, String> {
-    let base = std::env::var_os("XDG_CONFIG_HOME")
-        .filter(|v| !v.is_empty())
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))
+    let var = |name: &str| std::env::var_os(name).filter(|v| !v.is_empty()).map(PathBuf::from);
+    let base = var("XDG_CONFIG_HOME")
+        // Windows keeps settings in AppData\Roaming.
+        .or_else(|| if cfg!(windows) { var("APPDATA") } else { None })
+        .or_else(|| var("HOME").map(|home| home.join(".config")))
         .ok_or("can't find the config folder, HOME isn't set")?;
-    Ok(base.join("lagswitch/config.toml"))
+    Ok(base.join("lagswitch").join("config.toml"))
 }
 
 fn text_value(value: &str) -> &str {

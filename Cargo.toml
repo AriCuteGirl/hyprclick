@@ -7,10 +7,16 @@ edition = "2024"
 chrono = { version = "0.4.45", default-features = false, features = ["clock"] }
 dirs = "7.0.0"
 eframe = "0.37.0"
-evdev = "0.13.2"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+evdev = "0.13.2"
 zbus = { version = "5", default-features = false, features = ["blocking-api", "async-io"] }
+
+# On Windows the Lag tab runs lagswitch's logic in-process, over WinDivert.
+[target.'cfg(windows)'.dependencies]
+lagswitch = { path = "lagswitch" }
 
 [profile.release]
 lto = "thin"

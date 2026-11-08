@@ -63,6 +63,7 @@ impl Hotkey {
         self.mods.is_empty() && self.key.starts_with("mouse:")
     }
 
+    #[cfg(target_os = "linux")]
     /// Qt key code (modifiers included), what KDE's global shortcuts store.
     /// KDE can't bind mouse buttons as global shortcuts.
     pub fn qt_key(&self) -> Result<i32, String> {
@@ -194,6 +195,7 @@ fn keysym(key: Key) -> Option<&'static str> {
 }
 
 /// xkb keysym name (as stored in `Hotkey::key`) -> Qt::Key.
+#[cfg(target_os = "linux")]
 fn qt_keycode(name: &str) -> Option<i32> {
     let mut chars = name.chars();
     if let (Some(c), None) = (chars.next(), chars.next()) {

@@ -2,27 +2,78 @@
 //! CLI is used here, so the GUI never needs root and works unchanged when
 //! lagswitch isn't installed.
 
-use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 /// Where install.sh puts it. NixOS has it on PATH instead.
+#[cfg(unix)]
 const INSTALLED: &str = "/usr/local/bin/lagswitch";
 
 /// The lagswitch CLI, if it's installed.
+#[cfg(unix)]
 pub fn cli() -> Option<std::path::PathBuf> {
     let installed = std::path::PathBuf::from(INSTALLED);
     if installed.exists() { Some(installed) } else { crate::setup::find_program("lagswitch") }
 }
 
+/// On Windows lagswitch runs inside hyprclick, so there's no CLI to bind.
+#[cfg(windows)]
+pub fn cli() -> Option<std::path::PathBuf> {
+    None
+}
+
+#[cfg(unix)]
 pub fn installed() -> bool {
     cli().is_some()
 }
 
+#[cfg(windows)]
+pub fn installed() -> bool {
+    crate::winlag::available()
+}
+
+/// Windows only lets an administrator capture packets.
+pub fn needs_admin() -> bool {
+    #[cfg(windows)]
+    return !crate::win::is_admin();
+    #[cfg(unix)]
+    false
+}
+
+/// Start hyprclick again as administrator. False if Windows refused.
+pub fn restart_as_admin() -> bool {
+    #[cfg(windows)]
+    return crate::win::relaunch_as_admin();
+    #[cfg(unix)]
+    false
+}
+
+/// The same commands as the lagswitch CLI, answered in this process.
+#[cfg(windows)]
+fn run(args: &[&str]) -> Result<String, String> {
+    let args = args.iter().map(|a| a.to_string()).collect();
+    lagswitch::cli::run(args, &crate::winlag::Local).map(|outcome| outcome.output)
+}
+
+/// A Lag key: run the command and show what happened as a notification.
+#[cfg(windows)]
+pub fn key(args: &[&str]) {
+    let args = args.iter().map(|a| a.to_string()).collect();
+    match lagswitch::cli::run(args, &crate::winlag::Local) {
+        Ok(outcome) => {
+            if let Some(notice) = outcome.notice {
+                crate::win::notify(&notice);
+            }
+        }
+        Err(e) => crate::win::notify(&e),
+    }
+}
+
+#[cfg(unix)]
 fn run(args: &[&str]) -> Result<String, String> {
     let cli = cli().ok_or("lagswitch isn't installed")?;
-    let out = Command::new(cli).args(args).output().map_err(|e| format!("lagswitch: {e}"))?;
+    let out = std::process::Command::new(cli).args(args).output().map_err(|e| format!("lagswitch: {e}"))?;
     if out.status.success() {
         Ok(String::from_utf8_lossy(&out.stdout).trim_end().to_string())
     } else {

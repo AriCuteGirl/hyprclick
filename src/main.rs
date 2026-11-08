@@ -1,17 +1,28 @@
+#![cfg_attr(windows, windows_subsystem = "windows")]
 mod afk;
 mod config;
 mod controller;
+#[cfg(windows)]
+mod compat;
 mod desktop;
 mod engine;
 mod hotkey;
 mod hypr;
+#[cfg(windows)]
+mod hotkeys;
+mod input;
 mod ipc;
+#[cfg(target_os = "linux")]
 mod kde;
 mod lag;
 mod setup;
 mod sway;
 mod theme;
 mod ui;
+#[cfg(windows)]
+mod win;
+#[cfg(windows)]
+mod winlag;
 
 use config::Config;
 use controller::Controller;
@@ -143,6 +154,11 @@ fn gui() {
             }
         }
         None => {}
+    }
+    // Windows has no compositor binds: hyprclick holds its keys while it runs.
+    #[cfg(windows)]
+    if let Err(e) = hotkeys::reload() {
+        desktop::notify(&e);
     }
     ui::run();
     ipc::cleanup();

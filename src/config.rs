@@ -101,7 +101,7 @@ impl Default for Config {
         let window = crate::desktop::get().window_mode().is_ok();
         Self {
             mode: if window { Mode::Window } else { Mode::Cursor },
-            target_class: "org.vinegarhq.Sober".into(),
+            target_class: if cfg!(windows) { "RobloxPlayerBeta.exe" } else { "org.vinegarhq.Sober" }.into(),
             target_title: String::new(),
             pos: [0.5, 0.5],
             button: MouseButton::Left,
@@ -113,7 +113,8 @@ impl Default for Config {
             pause_when_hidden: true,
             at_mouse: false,
             notify: true,
-            afk_method: if window { AfkMethod::Window } else { AfkMethod::Gamepad },
+            // Windows has no virtual pad, but its Window method needs no plugin.
+            afk_method: if window || cfg!(windows) { AfkMethod::Window } else { AfkMethod::Gamepad },
             afk_action: AfkAction::Wiggle,
             afk_minutes: 10.0,
             hotkey: crate::hotkey::Hotkey::default(),

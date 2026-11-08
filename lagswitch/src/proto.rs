@@ -12,7 +12,7 @@
 //!
 //! A target is app:<name>, pid:<n> or network (the whole PC). Replies start with "ok" or "err".
 
-use crate::delay::{Shape, Style};
+use crate::shape::{Shape, Style};
 use crate::rules::Direction;
 
 pub const SOCKET: &str = "/run/lagswitch/sock";
