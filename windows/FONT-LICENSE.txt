@@ -1,0 +1,6 @@
+SymbolsNerdFont-Regular.ttf is Symbols Nerd Font 3.5.0 from Nerd Fonts
+(https://github.com/ryanoasis/nerd-fonts), used for hyprclick's icons.
+
+Nerd Fonts is released under the MIT License. The glyphs it collects keep
+their own licenses (for example Font Awesome under the SIL Open Font License
+1.1); see https://github.com/ryanoasis/nerd-fonts/blob/master/license-audit.md

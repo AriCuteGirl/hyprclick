@@ -10,16 +10,24 @@
 //!   `hyprclick setup`) so it isn't re-plugged every time anti-AFK starts.
 //! Either way it's locked to the target window and stops if that window goes
 //! away (closed or crashed).
+//!
+//! On Windows there's no virtual pad, and Window switches to the game for a
+//! moment, wiggles (or right-clicks) with SendInput, and switches back.
 
 use crate::config::{AfkAction, AfkMethod, Config};
 use crate::desktop;
 use crate::hypr;
 use chrono::{DateTime, Local};
+#[cfg(target_os = "linux")]
 use evdev::uinput::VirtualDevice;
+#[cfg(target_os = "linux")]
 use evdev::{AbsInfo, AbsoluteAxisCode, AttributeSet, BusType, EventType, InputEvent, InputId, KeyCode, UinputAbsSetup};
 use std::collections::VecDeque;
+#[cfg(target_os = "linux")]
 use std::io::{BufRead, BufReader, Write};
+#[cfg(target_os = "linux")]
 use std::os::unix::net::{UnixListener, UnixStream};
+#[cfg(target_os = "linux")]
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -119,6 +127,9 @@ impl AntiAfk {
         let target = desktop::find_target(&cfg.target_class, &cfg.target_title)
             .ok_or_else(|| format!("window '{}' isn't open", cfg.target_class))?;
         let mut driver = match cfg.afk_method {
+            AfkMethod::Window if desktop::get() == desktop::Desktop::Windows => {
+                Driver::Window { address: target.address.clone(), action: cfg.afk_action }
+            }
             AfkMethod::Window => {
                 desktop::get().window_mode().map_err(|_| "Window anti-AFK needs Hyprland, use Gamepad".to_string())?;
                 hypr::plugin::ensure()?;
@@ -240,6 +251,16 @@ impl Driver {
                 }
                 Ok(direction(sx, sy))
             }
+            #[cfg(windows)]
+            Driver::Window { address, action } => {
+                let right_click = *action == AfkAction::RightClick;
+                let (dx, dy) = ((sx as f64 * WIGGLE) as i32, (sy as f64 * WIGGLE) as i32);
+                if !crate::win::poke(address, dx, dy, right_click, NUDGE_HOLD)? {
+                    return Ok("✓ you were on it");
+                }
+                Ok(if right_click { "◉ RIGHT-CLICK" } else { direction(sx, sy) })
+            }
+            #[cfg(not(windows))]
             Driver::Window { address, action } => {
                 // The plugin may have been unloaded (Hyprland update etc.).
                 hypr::plugin::ensure()?;
@@ -279,6 +300,7 @@ fn direction(x: i32, y: i32) -> &'static str {
     }
 }
 
+#[cfg(target_os = "linux")]
 /// Move with the left stick and turn the camera with the right one, then
 /// re-center everything (same as caffeine).
 fn nudge_pad(pad: &mut VirtualDevice, x: i32, y: i32) -> Result<(), String> {
@@ -295,10 +317,12 @@ fn nudge_pad(pad: &mut VirtualDevice, x: i32, y: i32) -> Result<(), String> {
     .map_err(|e| e.to_string())
 }
 
+#[cfg(target_os = "linux")]
 fn uinput_err(e: std::io::Error) -> String {
-    format!("/dev/uinput: {e} (are you in the 'input' group?)")
+    format!("/dev/uinput: {e} (are you in the 'input' group, or 'uinput' on NixOS?)")
 }
 
+#[cfg(target_os = "linux")]
 fn make_pad() -> Result<VirtualDevice, String> {
     let keys = AttributeSet::from_iter([
         KeyCode::BTN_SOUTH,
@@ -326,11 +350,13 @@ fn make_pad() -> Result<VirtualDevice, String> {
     b.build().map_err(uinput_err)
 }
 
+#[cfg(target_os = "linux")]
 fn pad_socket() -> PathBuf {
     let runtime = std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/tmp".into());
     PathBuf::from(runtime).join("hyprclick-pad.sock")
 }
 
+#[cfg(target_os = "linux")]
 fn pad_request(cmd: &str) -> Option<String> {
     let mut sock = UnixStream::connect(pad_socket()).ok()?;
     let _ = sock.set_read_timeout(Some(Duration::from_secs(3)));
@@ -340,11 +366,13 @@ fn pad_request(cmd: &str) -> Option<String> {
     Some(reply.trim().to_string())
 }
 
+#[cfg(target_os = "linux")]
 /// The pad's /dev/input node, if the service is running.
 fn pad_node() -> Option<String> {
     pad_request("ping")?.strip_prefix("pad ok ").map(String::from)
 }
 
+#[cfg(target_os = "linux")]
 /// Start `hyprclick pad` in the background if it isn't running.
 pub fn ensure_pad_service() -> Result<(), String> {
     if pad_node().is_some() {
@@ -367,6 +395,7 @@ pub fn ensure_pad_service() -> Result<(), String> {
     Err("virtual pad service didn't start (/dev/uinput access?)".into())
 }
 
+#[cfg(target_os = "linux")]
 /// `hyprclick pad`: own the virtual Xbox pad for as long as the session
 /// runs (started at login), and nudge it on request.
 pub fn run_pad_service() {
@@ -422,6 +451,22 @@ pub fn run_pad_service() {
         let _ = (&stream).write_all(format!("{reply}\n").as_bytes());
     }
     let _ = std::fs::remove_file(&path);
+}
+
+/// No virtual pad on Windows.
+#[cfg(windows)]
+pub fn ensure_pad_service() -> Result<(), String> {
+    Err("Gamepad anti-AFK isn't available on Windows, use Window".into())
+}
+
+#[cfg(windows)]
+fn pad_request(_: &str) -> Option<String> {
+    None
+}
+
+#[cfg(windows)]
+pub fn run_pad_service() {
+    eprintln!("hyprclick pad: not available on Windows");
 }
 
 /// `hyprclick afk`: run in the terminal with caffeine-style output.

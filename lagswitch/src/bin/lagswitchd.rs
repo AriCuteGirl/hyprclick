@@ -13,14 +13,16 @@ use std::time::{Duration, Instant};
 
 use lagswitch::proto::{FreezeRequest, Request, SOCKET, Target};
 use lagswitch::state::{self, Active, Decision};
-use lagswitch::{cgroup, nft};
+use lagswitch::delay::{Delay, Shape};
+use lagswitch::rules::{Direction, Freeze};
+use lagswitch::{cgroup, network, nft};
 
 /// Removes the rules however the daemon ends, including by panic.
 struct Cleanup;
 
 impl Drop for Cleanup {
     fn drop(&mut self) {
-        if let Err(e) = nft::release() {
+        if let Err(e) = network::release_all() {
             eprintln!("lagswitchd: cleanup failed: {e}");
         }
     }
@@ -79,14 +81,28 @@ fn peer_uid(stream: &UnixStream) -> Option<u32> {
     (rc == 0).then_some(cred.uid)
 }
 
+/// How often fake lag looks for the app again, in case it restarted.
+const FOLLOW_EVERY: Duration = Duration::from_secs(2);
+
+/// Fake lag on one app, which lasts until it's turned off.
+struct Lag {
+    shape: Shape,
+    target: Target,
+    cgroups: Vec<String>,
+    queue: Delay,
+    checked: Instant,
+}
+
 struct Daemon {
     uid: u32,
     active: Option<Active>,
+    lag: Option<Lag>,
 }
 
 impl Daemon {
     fn resolve(&self, target: &Target) -> Result<Vec<String>, String> {
         let cgroups = match target {
+            Target::Network => return Err("this only works on one app, not the whole PC".to_string()),
             Target::App(name) => cgroup::resolve_app(name, self.uid)?,
             Target::Pid(pid) => vec![cgroup::of_pid(*pid)?],
         };
@@ -97,39 +113,152 @@ impl Daemon {
         Ok(cgroups)
     }
 
+    /// Load the table for this freeze plus the current fake lag.
+    fn apply(&self, active: Option<&Active>) -> Result<(), String> {
+        let freeze = match active {
+            None => Freeze::Off,
+            Some(a) if a.network => Freeze::WholePc,
+            Some(a) => Freeze::Apps(&a.cgroups, a.direction),
+        };
+        let (lag, inbound) = match &self.lag {
+            Some(l) => (l.cgroups.as_slice(), l.shape.delays_inbound()),
+            None => (&[][..], false),
+        };
+        nft::apply(freeze, lag, inbound)
+    }
+
     fn freeze(&mut self, f: &FreezeRequest, length: Duration) -> Result<(), String> {
-        let cgroups = self.resolve(&f.target)?;
-        nft::freeze(&cgroups, f.direction)?;
-        self.active = Some(Active {
-            mode: f.mode,
-            direction: f.direction,
-            cgroups,
-            deadline: Instant::now() + length,
-        });
+        let network_off = self.active.as_ref().is_some_and(|a| a.network);
+        let whole_pc = f.target == Target::Network;
+        let (direction, cgroups) =
+            if whole_pc { (Direction::Both, Vec::new()) } else { (f.direction, self.resolve(&f.target)?) };
+        let next = Active { mode: f.mode, direction, cgroups, network: whole_pc, deadline: Instant::now() + length };
+        self.apply(Some(&next))?;
+        let routing = match (whole_pc, network_off) {
+            (true, false) => network::off(),
+            (false, true) => network::restore(),
+            _ => Ok(()),
+        };
+        if let Err(e) = routing {
+            let _ = network::restore();
+            let _ = self.apply(None);
+            self.active = None;
+            return Err(e);
+        }
+        self.active = Some(next);
         Ok(())
     }
 
     fn release(&mut self) -> Result<(), String> {
-        nft::release()?;
+        let network = network::restore();
+        if self.apply(None).is_err() {
+            // Ending the freeze matters more than keeping fake lag on.
+            self.lag = None;
+            nft::release()?;
+        }
+        network?;
         self.active = None;
         Ok(())
     }
 
+    fn lag_on(&mut self, shape: Shape, target: &Target) -> Result<(), String> {
+        shape.check()?;
+        let cgroups = self.resolve(target)?;
+        let previous = self.lag.as_ref().map(|l| (l.shape, l.target.clone(), l.cgroups.clone()));
+        match &mut self.lag {
+            Some(lag) => {
+                lag.queue.set_shape(shape);
+                lag.shape = shape;
+                lag.target = target.clone();
+                lag.cgroups = cgroups;
+            }
+            None => {
+                let queue = Delay::open(shape)?;
+                self.lag = Some(Lag { shape, target: target.clone(), cgroups, queue, checked: Instant::now() });
+            }
+        }
+        if let Err(e) = self.apply(self.active.as_ref()) {
+            match (previous, &mut self.lag) {
+                (Some((shape, target, cgroups)), Some(lag)) => {
+                    lag.queue.set_shape(shape);
+                    lag.shape = shape;
+                    lag.target = target;
+                    lag.cgroups = cgroups;
+                }
+                _ => self.lag = None,
+            }
+            return Err(e);
+        }
+        Ok(())
+    }
+
+    /// If the lagged app restarted, it has a new cgroup: move the rules to it.
+    fn follow_lag(&mut self, now: Instant) {
+        let Some(lag) = &mut self.lag else { return };
+        if now < lag.checked + FOLLOW_EVERY || !matches!(lag.target, Target::App(_)) {
+            return;
+        }
+        lag.checked = now;
+        let target = lag.target.clone();
+        // Not running right now: keep the old rules until it's back.
+        let Ok(cgroups) = self.resolve(&target) else { return };
+        let Some(lag) = &mut self.lag else { return };
+        if cgroups == lag.cgroups {
+            return;
+        }
+        let old = std::mem::replace(&mut lag.cgroups, cgroups);
+        if let Err(e) = self.apply(self.active.as_ref()) {
+            eprintln!("lagswitchd: can't follow the app: {e}");
+            if let Some(lag) = &mut self.lag {
+                lag.cgroups = old;
+            }
+        }
+    }
+
+    fn lag_off(&mut self) -> Result<(), String> {
+        let Some(lag) = self.lag.take() else { return Ok(()) };
+        if let Err(e) = self.apply(self.active.as_ref()) {
+            self.lag = Some(lag);
+            return Err(e);
+        }
+        // Dropping the queue lets through whatever was still waiting.
+        drop(lag);
+        Ok(())
+    }
+
     fn report(&self) -> String {
-        match &self.active {
+        let freeze = match &self.active {
             None => "ok idle".to_string(),
             Some(a) => format!(
                 "ok frozen {} {} {} {}",
                 a.mode.name(),
                 a.direction.name(),
                 state::millis_until(a.deadline, Instant::now()),
-                a.cgroups.join(",")
+                if a.network { "network".to_string() } else { a.cgroups.join(",") }
             ),
+        };
+        match &self.lag {
+            Some(lag) => format!(
+                "{freeze} lag {} {} style={} jitter={} out={} in={}",
+                lag.shape.ms,
+                lag.cgroups.join(","),
+                lag.shape.style.name(),
+                lag.shape.jitter,
+                lag.queue.counts.0,
+                lag.queue.counts.1
+            ),
+            None => freeze,
         }
     }
 
     fn handle(&mut self, line: &str) -> String {
         let result = Request::parse(line).and_then(|request| {
+            match &request {
+                Request::Lag { toggle: true, .. } if self.lag.is_some() => return self.lag_off(),
+                Request::Lag { shape, target, .. } => return self.lag_on(*shape, target),
+                Request::LagOff => return self.lag_off(),
+                _ => {}
+            }
             match state::decide(self.active.as_ref(), &request) {
                 Decision::Report => Ok(()),
                 Decision::Release => self.release(),
@@ -162,14 +291,23 @@ impl Daemon {
     /// Runs until a signal arrives.
     fn run(&mut self, listener: &UnixListener, signals: &OwnedFd) -> Result<(), String> {
         loop {
-            let timeout = match &self.active {
-                Some(a) => state::millis_until(a.deadline, Instant::now()).min(i32::MAX as u64) as i32,
-                None => -1,
-            };
-            let mut fds = [
+            let now = Instant::now();
+            let next = [
+                self.active.as_ref().map(|a| a.deadline),
+                self.lag.as_ref().and_then(|l| l.queue.next_due()),
+                self.lag.as_ref().map(|l| l.checked + FOLLOW_EVERY),
+            ]
+            .into_iter()
+            .flatten()
+            .min();
+            let timeout = next.map_or(-1, |due| state::millis_until(due, now).min(i32::MAX as u64) as i32);
+            let mut fds = vec![
                 libc::pollfd { fd: listener.as_raw_fd(), events: libc::POLLIN, revents: 0 },
                 libc::pollfd { fd: signals.as_raw_fd(), events: libc::POLLIN, revents: 0 },
             ];
+            if let Some(lag) = &self.lag {
+                fds.push(libc::pollfd { fd: lag.queue.fd(), events: libc::POLLIN, revents: 0 });
+            }
             // SAFETY: fds is valid for the call and its length is passed with it.
             let rc = unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as libc::nfds_t, timeout) };
             if rc < 0 {
@@ -182,6 +320,17 @@ impl Daemon {
             if fds[1].revents != 0 {
                 return Ok(());
             }
+            if let Some(lag) = &mut self.lag {
+                if fds.get(2).is_some_and(|fd| fd.revents != 0)
+                    && let Err(e) = lag.queue.read()
+                {
+                    eprintln!("lagswitchd: {e}");
+                }
+                if let Err(e) = lag.queue.pass_due(Instant::now()) {
+                    eprintln!("lagswitchd: {e}");
+                }
+            }
+            self.follow_lag(Instant::now());
             if fds[0].revents != 0
                 && let Ok((stream, _)) = listener.accept()
                 && let Err(e) = self.serve(stream)
@@ -201,30 +350,46 @@ impl Daemon {
     }
 }
 
+/// A user name's uid, from the system's user database.
+fn uid_of(name: &str) -> Result<u32, String> {
+    let c_name = std::ffi::CString::new(name).map_err(|_| format!("bad user name \"{name}\""))?;
+    // SAFETY: an all-zero passwd is valid storage for getpwnam_r to fill.
+    let mut entry: libc::passwd = unsafe { mem::zeroed() };
+    let mut buf = vec![0 as libc::c_char; 16384];
+    let mut found: *mut libc::passwd = ptr::null_mut();
+    // SAFETY: every pointer is valid for the call, and buf's length is passed with it.
+    let rc = unsafe { libc::getpwnam_r(c_name.as_ptr(), &mut entry, buf.as_mut_ptr(), buf.len(), &mut found) };
+    if rc != 0 || found.is_null() {
+        return Err(format!("no user named \"{name}\""));
+    }
+    Ok(entry.pw_uid)
+}
+
 fn run() -> Result<(), String> {
     let mut args = std::env::args().skip(1);
     let mut uid = None;
     while let Some(flag) = args.next() {
         match flag.as_str() {
-            "--release" => return nft::release(),
+            "--release" => return network::release_all(),
             "--uid" => {
                 let value = args.next().ok_or("--uid needs a value")?;
                 uid = Some(value.parse().map_err(|_| format!("bad uid \"{value}\""))?);
             }
+            "--user" => uid = Some(uid_of(&args.next().ok_or("--user needs a name")?)?),
             _ => return Err(format!("unknown option {flag}")),
         }
     }
-    let uid = uid.ok_or("--uid is required")?;
+    let uid = uid.ok_or("--uid or --user is required")?;
     // SAFETY: geteuid has no preconditions.
     if unsafe { libc::geteuid() } != 0 {
         return Err("not root".to_string());
     }
-    // Rules left behind by a crash.
-    nft::release()?;
+    // Whatever a crash or power cut left behind.
+    network::release_all()?;
     let cleanup = Cleanup;
     let signals = signal_fd()?;
     let listener = listen(uid)?;
-    let result = Daemon { uid, active: None }.run(&listener, &signals);
+    let result = Daemon { uid, active: None, lag: None }.run(&listener, &signals);
     let _ = fs::remove_file(SOCKET);
     drop(cleanup);
     result

@@ -2,6 +2,9 @@
 
 use serde_json::Value;
 use std::io::{Read, Write};
+#[cfg(windows)]
+use crate::compat::UnixStream;
+#[cfg(unix)]
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::process::Command;

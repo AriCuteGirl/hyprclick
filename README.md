@@ -1,15 +1,15 @@
 # hyprclick
 
-Background autoclicker for **Hyprland** and **KDE Plasma**, written in Rust with an egui UI. Other desktops (GNOME, Sway, plain X11) aren't supported.
+Background autoclicker for **Hyprland**, **Sway**, **KDE Plasma** and **[Windows](#windows)**, written in Rust with an egui UI. Other Linux desktops (GNOME, plain X11) aren't supported. It also installs on [NixOS](#nixos) from its flake.
 
-| | Hyprland | KDE Plasma 6 |
-|---|---|---|
-| Window mode (click a window in the background) | yes | no, see [KDE](#kde-plasma) |
-| Cursor mode | yes | yes |
-| Anti-AFK: Window | yes | no |
-| Anti-AFK: Gamepad | yes | yes |
-| Hotkey from `hyprclick setup` / Key tab | Hyprland bind (keys + mouse buttons) | KDE global shortcut (keys only) |
-| Lag tab (freeze one app's network) | yes | no |
+| | Hyprland | Sway | KDE Plasma 6 | Windows 10/11 |
+|---|---|---|---|---|
+| Window mode (click a window in the background) | yes | no | no, see [KDE](#kde-plasma) | no |
+| Cursor mode | yes | yes, without the cursor lock | yes | yes |
+| Anti-AFK: Window | yes | no | no | yes, switches to the game for a moment |
+| Anti-AFK: Gamepad | yes | yes | yes | no |
+| Hotkey from `hyprclick setup` / Key tab | Hyprland bind (keys + mouse buttons) | Sway bindsym (keys + mouse buttons) | KDE global shortcut (keys only) | while hyprclick runs (keys only) |
+| Lag tab (freeze the network, fake lag) | yes | yes | no | yes, run as administrator |
 
  The window takes its colors and font from the Noctalia rice (`~/.config/noctalia/rice.toml` → `palettes/<custom_palette>.json`), with the Ari palette built in as a fallback.
 
@@ -25,7 +25,7 @@ hyprclick setup
 `hyprclick setup` binds ALT+H (pick any other key in the app's Key tab), makes the window float, and starts the virtual gamepad at login. Then open it with `hyprclick` or from your app launcher.
 
 Needs on Hyprland:
-- Hyprland, tested on **0.56.2** (Lua config; the classic `hyprland.conf` is supported but untested). The plugin is compiled against Hyprland's internals on first launch, so other versions may not build.
+- Hyprland **0.57** (tested on 0.57.1; Lua config; the classic `hyprland.conf` is supported but untested). The plugin is compiled against Hyprland's internals on first launch, so other versions may not build. Hyprland 0.56 needs hyprclick 0.3.0 or older.
 - `g++`, `pkg-config` and Hyprland's headers: run `hyprpm update` once (and again after Hyprland updates).
 - For Cursor mode and Gamepad anti-AFK: access to `/dev/uinput` (see below).
 
@@ -42,6 +42,59 @@ echo uinput | sudo tee /etc/modules-load.d/uinput.conf
 ```
 
 Then reboot (or log out and back in, and run `sudo modprobe uinput && sudo udevadm trigger`). The error "/dev/uinput: Permission denied (are you in the 'input' group?)" means this step is missing.
+
+## Windows
+
+Download `hyprclick-windows-x64.zip` from the [latest release](https://github.com/AriCuteGirl/hyprclick/releases/latest), unzip the whole folder and run `hyprclick.exe`. SmartScreen may warn about an unsigned app the first time: More info → Run anyway.
+
+- **Keys** are registered by hyprclick itself, so they work while it's open (minimized is fine). ALT+H, and ALT+Z/X/C/B for the Lag tab, as on Linux. Mouse buttons can't be hotkeys on Windows.
+- **Cursor mode** clicks with `SendInput`. The default target is `RobloxPlayerBeta.exe`.
+- **Anti-AFK** (Window method) switches to the game every few minutes, wiggles the mouse or right-clicks, and switches back to what you were using. It skips that while you're playing.
+- **The Lag tab** needs hyprclick running as administrator, and has a button to restart that way. It uses [WinDivert](https://reqrypt.org/windivert.html), whose `WinDivert.dll` and `WinDivert64.sys` come in the zip and have to stay next to the exe. Freezes, Whole PC, One app and fake lag (steady and choke) behave as on Linux: the app is matched by the network ports its processes own, re-read twice a second, so it follows the game across restarts. While a freeze or fake lag is on, the rest of the PC's traffic passes through hyprclick too, unchanged.
+
+To build the zip on Linux: `bash scripts/build-windows.sh` (needs rustup's `x86_64-pc-windows-gnu` target and Nix).
+
+## Sway
+
+`hyprclick setup` writes its binds and window rule to `~/.config/sway/hyprclick.conf` and adds one `include` line to `~/.config/sway/config` (with a backup next to it). It checks the file with `sway --validate` before reloading Sway. If you have no `~/.config/sway/config` yet, copy `/etc/sway/config` there first. On NixOS that copy comes out read-only, and setup makes it writable for you.
+
+Sway can't send clicks to a window in the background or tell apps where the cursor is, so it has Cursor mode without **Lock cursor to the picked spot**, and Gamepad anti-AFK. Every bind uses `--no-repeat`, so holding a key never toggles twice.
+
+The Lag tab works the same as on Hyprland. Its One app mode can freeze Flatpak apps such as Sober, because each has its own cgroup. Apps you start from a Sway keybind or terminal share your login's cgroup, so start those with `systemd-run --user --scope <app>` if you want to freeze them alone.
+
+## NixOS
+
+The repo is a flake. Add it to your system flake:
+
+```nix
+{
+  inputs.hyprclick.url = "github:AriCuteGirl/hyprclick";
+
+  outputs = { nixpkgs, hyprclick, ... }: {
+    nixosConfigurations.laptop = nixpkgs.lib.nixosSystem {
+      modules = [
+        ./configuration.nix
+        hyprclick.nixosModules.default
+        {
+          programs.hyprclick = {
+            enable = true;
+            users = [ "ari" ]; # get /dev/uinput through the uinput group
+          };
+          # Optional: the Lag tab's root service.
+          services.lagswitch = {
+            enable = true;
+            user = "ari";
+          };
+        }
+      ];
+    };
+  };
+}
+```
+
+Then `sudo nixos-rebuild switch --flake .#laptop`, log out and back in (for the uinput group), and run `hyprclick setup`. The binds point at `/run/current-system/sw/bin`, so they keep working after updates.
+
+The packages are built with the flake's own nixpkgs (nixos-unstable), because the code needs Rust 1.88 or newer. `nix flake check` also runs a NixOS VM test with Sway: setup, the window, `/dev/uinput`, fake lag and a freeze.
 
 ## KDE Plasma
 
@@ -99,13 +152,25 @@ It's locked to the exact target window and stops when that window goes away. It 
 
 ## Lag
 
-Freezes one app's network while it keeps running and the rest of your PC stays online, like CirnoLag on Windows. The tab has an app picker, duration, direction (Both, Incoming, Outgoing) and three keys, ALT+Z, ALT+X and ALT+C by default:
+Freezes your network with one key. There are two kinds of freeze:
+
+- **Whole PC**: everything on the PC loses its network at once, including calls. It comes back instantly when the freeze ends.
+- **One app**: the same for one app, while the rest of your PC stays online. You choose the app and direction (Both, Incoming, Outgoing).
+
+The three keys are ALT+Z, ALT+X and ALT+C by default:
 
 - **Timed**: press once, it freezes for the set time. Press again to end it early.
 - **Toggle**: press to freeze, press again to stop.
 - **Hold**: frozen while the key is down.
 
 Every mode stops at the Max setting, 30 seconds by default.
+
+**Fake lag** works on the app picked under One app, until you turn it off. ALT+B turns it on and off, or use Start and Stop in the tab. There are two styles:
+
+- **Steady**: the app's ping goes up by the amount you set (150 ms by default).
+- **Choke**: the app's outgoing packets are held for up to the amount and then sent all at once, again and again. Others see you freeze and jump, while your own game stays smooth.
+
+**Jitter** makes each hold (or the steady delay) a random amount shorter, up to that percentage. The tab shows how many packets have been held, so you can tell it's reaching the game. Changes take effect straight away, and if the game restarts, fake lag follows it within 2 seconds. The rest of your PC is never affected.
 
 Changing firewall rules needs root, so this runs through [lagswitch](lagswitch/README.md), a small root service with its own install step. hyprclick itself never needs root and works normally without it:
 

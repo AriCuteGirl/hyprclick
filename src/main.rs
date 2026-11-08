@@ -1,16 +1,28 @@
+#![cfg_attr(windows, windows_subsystem = "windows")]
 mod afk;
 mod config;
 mod controller;
+#[cfg(windows)]
+mod compat;
 mod desktop;
 mod engine;
 mod hotkey;
 mod hypr;
+#[cfg(windows)]
+mod hotkeys;
+mod input;
 mod ipc;
+#[cfg(target_os = "linux")]
 mod kde;
 mod lag;
 mod setup;
+mod sway;
 mod theme;
 mod ui;
+#[cfg(windows)]
+mod win;
+#[cfg(windows)]
+mod winlag;
 
 use config::Config;
 use controller::Controller;
@@ -38,10 +50,10 @@ usage:
 fn main() {
     let arg = std::env::args().nth(1);
     // The window list, hotkey and anti-AFK target come from the compositor;
-    // only Hyprland and KDE Plasma are supported.
+    // only Hyprland, Sway and KDE Plasma are supported.
     let help = matches!(arg.as_deref(), Some("help" | "-h" | "--help"));
     if !help && desktop::detect().is_none() {
-        eprintln!("hyprclick runs on Hyprland or KDE Plasma (neither HYPRLAND_INSTANCE_SIGNATURE nor XDG_CURRENT_DESKTOP=KDE is set).");
+        eprintln!("hyprclick runs on Hyprland, Sway or KDE Plasma (none of HYPRLAND_INSTANCE_SIGNATURE, SWAYSOCK or XDG_CURRENT_DESKTOP=KDE is set).");
         std::process::exit(1);
     }
     match arg.as_deref() {
@@ -56,6 +68,10 @@ fn main() {
         Some("setup") => setup(std::env::args().nth(2)),
         Some("afk") => afk::run_terminal(&Config::load()),
         Some("pad") => afk::run_pad_service(),
+        #[cfg(windows)]
+        Some("lag-probe") => winlag::probe(),
+        #[cfg(windows)]
+        Some("lag-selftest") => std::process::exit(if winlag::selftest() { 0 } else { 1 }),
         _ => print!("{USAGE}"),
     }
 }
@@ -142,6 +158,11 @@ fn gui() {
             }
         }
         None => {}
+    }
+    // Windows has no compositor binds: hyprclick holds its keys while it runs.
+    #[cfg(windows)]
+    if let Err(e) = hotkeys::reload() {
+        desktop::notify(&e);
     }
     ui::run();
     ipc::cleanup();

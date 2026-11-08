@@ -11,6 +11,8 @@ pub struct Active {
     pub mode: Mode,
     pub direction: Direction,
     pub cgroups: Vec<String>,
+    /// Whole PC mode: everything is blocked and no cgroups are involved.
+    pub network: bool,
     pub deadline: Instant,
 }
 
@@ -24,7 +26,8 @@ pub enum Decision {
 
 pub fn decide(active: Option<&Active>, request: &Request) -> Decision {
     match request {
-        Request::Status => Decision::Report,
+        // Fake lag doesn't touch the freeze.
+        Request::Status | Request::Lag { .. } | Request::LagOff => Decision::Report,
         Request::Release => Decision::Release,
         // A timed freeze started under a held key keeps running out its timer.
         Request::HoldStop => match active {
@@ -66,7 +69,7 @@ mod tests {
     }
 
     fn active(mode: Mode) -> Active {
-        Active { mode, direction: Direction::Both, cgroups: vec![], deadline: Instant::now() }
+        Active { mode, direction: Direction::Both, cgroups: vec![], network: false, deadline: Instant::now() }
     }
 
     #[test]

@@ -91,6 +91,8 @@ pub struct Config {
     pub lag_timed_key: crate::hotkey::Hotkey,
     pub lag_toggle_key: crate::hotkey::Hotkey,
     pub lag_hold_key: crate::hotkey::Hotkey,
+    /// Turns fake lag on and off.
+    pub lag_fake_key: crate::hotkey::Hotkey,
 }
 
 impl Default for Config {
@@ -99,7 +101,7 @@ impl Default for Config {
         let window = crate::desktop::get().window_mode().is_ok();
         Self {
             mode: if window { Mode::Window } else { Mode::Cursor },
-            target_class: "org.vinegarhq.Sober".into(),
+            target_class: if cfg!(windows) { "RobloxPlayerBeta.exe" } else { "org.vinegarhq.Sober" }.into(),
             target_title: String::new(),
             pos: [0.5, 0.5],
             button: MouseButton::Left,
@@ -111,13 +113,15 @@ impl Default for Config {
             pause_when_hidden: true,
             at_mouse: false,
             notify: true,
-            afk_method: if window { AfkMethod::Window } else { AfkMethod::Gamepad },
+            // Windows has no virtual pad, but its Window method needs no plugin.
+            afk_method: if window || cfg!(windows) { AfkMethod::Window } else { AfkMethod::Gamepad },
             afk_action: AfkAction::Wiggle,
             afk_minutes: 10.0,
             hotkey: crate::hotkey::Hotkey::default(),
             lag_timed_key: crate::hotkey::Hotkey { mods: vec!["ALT".into()], key: "Z".into() },
             lag_toggle_key: crate::hotkey::Hotkey { mods: vec!["ALT".into()], key: "X".into() },
             lag_hold_key: crate::hotkey::Hotkey { mods: vec!["ALT".into()], key: "C".into() },
+            lag_fake_key: crate::hotkey::Hotkey { mods: vec!["ALT".into()], key: "B".into() },
         }
     }
 }

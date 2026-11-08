@@ -2,19 +2,78 @@
 //! CLI is used here, so the GUI never needs root and works unchanged when
 //! lagswitch isn't installed.
 
-use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-pub const CLI: &str = "/usr/local/bin/lagswitch";
+/// Where install.sh puts it. NixOS has it on PATH instead.
+#[cfg(unix)]
+const INSTALLED: &str = "/usr/local/bin/lagswitch";
 
-pub fn installed() -> bool {
-    std::path::Path::new(CLI).exists()
+/// The lagswitch CLI, if it's installed.
+#[cfg(unix)]
+pub fn cli() -> Option<std::path::PathBuf> {
+    let installed = std::path::PathBuf::from(INSTALLED);
+    if installed.exists() { Some(installed) } else { crate::setup::find_program("lagswitch") }
 }
 
+/// On Windows lagswitch runs inside hyprclick, so there's no CLI to bind.
+#[cfg(windows)]
+pub fn cli() -> Option<std::path::PathBuf> {
+    None
+}
+
+#[cfg(unix)]
+pub fn installed() -> bool {
+    cli().is_some()
+}
+
+#[cfg(windows)]
+pub fn installed() -> bool {
+    crate::winlag::available()
+}
+
+/// Windows only lets an administrator capture packets.
+pub fn needs_admin() -> bool {
+    #[cfg(windows)]
+    return !crate::win::is_admin();
+    #[cfg(unix)]
+    false
+}
+
+/// Start hyprclick again as administrator. False if Windows refused.
+pub fn restart_as_admin() -> bool {
+    #[cfg(windows)]
+    return crate::win::relaunch_as_admin();
+    #[cfg(unix)]
+    false
+}
+
+/// The same commands as the lagswitch CLI, answered in this process.
+#[cfg(windows)]
 fn run(args: &[&str]) -> Result<String, String> {
-    let out = Command::new(CLI).args(args).output().map_err(|e| format!("lagswitch: {e}"))?;
+    let args = args.iter().map(|a| a.to_string()).collect();
+    lagswitch::cli::run(args, &crate::winlag::Local).map(|outcome| outcome.output)
+}
+
+/// A Lag key: run the command and show what happened as a notification.
+#[cfg(windows)]
+pub fn key(args: &[&str]) {
+    let args = args.iter().map(|a| a.to_string()).collect();
+    match lagswitch::cli::run(args, &crate::winlag::Local) {
+        Ok(outcome) => {
+            if let Some(notice) = outcome.notice {
+                crate::win::notify(&notice);
+            }
+        }
+        Err(e) => crate::win::notify(&e),
+    }
+}
+
+#[cfg(unix)]
+fn run(args: &[&str]) -> Result<String, String> {
+    let cli = cli().ok_or("lagswitch isn't installed")?;
+    let out = std::process::Command::new(cli).args(args).output().map_err(|e| format!("lagswitch: {e}"))?;
     if out.status.success() {
         Ok(String::from_utf8_lossy(&out.stdout).trim_end().to_string())
     } else {
@@ -41,6 +100,26 @@ fn parse_status(text: &str) -> Status {
         direction: parts.next().unwrap_or("").to_string(),
         left_ms: parts.next().and_then(|ms| ms.parse().ok()).unwrap_or(0),
     }
+}
+
+/// Fake lag as the daemon reports it.
+#[derive(Clone, PartialEq, Debug)]
+pub struct FakeLag {
+    pub ms: u64,
+    pub choke: bool,
+    /// Packets held so far, out and in.
+    pub held: (u64, u64),
+}
+
+/// The fake lag part of a status line
+/// ("... lag 150 cgroups style=choke jitter=30 out=12 in=0").
+fn parse_fake_lag(text: &str) -> Option<FakeLag> {
+    let mut parts = text.split(' ').skip_while(|p| *p != "lag");
+    parts.next()?;
+    let ms = parts.next()?.parse().ok()?;
+    let field = |key: &str| text.split(' ').find_map(|p| p.strip_prefix(key));
+    let count = |key: &str| field(key).and_then(|v| v.parse().ok()).unwrap_or(0);
+    Some(FakeLag { ms, choke: field("style=") == Some("choke"), held: (count("out="), count("in=")) })
 }
 
 #[derive(Clone, PartialEq, Debug)]
@@ -72,6 +151,10 @@ pub struct Settings {
     pub direction: Direction,
     pub cap_seconds: f32,
     pub app: String,
+    pub whole_pc: bool,
+    pub lag_ms: u32,
+    pub lag_choke: bool,
+    pub lag_jitter: u8,
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -92,7 +175,16 @@ impl Direction {
 }
 
 fn parse_settings(text: &str) -> Settings {
-    let mut s = Settings { seconds: 1.5, direction: Direction::Both, cap_seconds: 30.0, app: String::new() };
+    let mut s = Settings {
+        seconds: 1.5,
+        direction: Direction::Both,
+        cap_seconds: 30.0,
+        app: String::new(),
+        whole_pc: false,
+        lag_ms: 150,
+        lag_choke: false,
+        lag_jitter: 0,
+    };
     for line in text.lines() {
         let Some((key, value)) = line.split_once('=') else { continue };
         let value = value.trim().trim_matches('"');
@@ -107,6 +199,10 @@ fn parse_settings(text: &str) -> Settings {
                 }
             }
             "last_app" => s.app = value.to_string(),
+            "whole_pc" => s.whole_pc = value == "true",
+            "lag_ms" => s.lag_ms = value.parse().unwrap_or(150),
+            "lag_style" => s.lag_choke = value == "choke",
+            "lag_jitter" => s.lag_jitter = value.parse::<u8>().unwrap_or(0).min(100),
             _ => {}
         }
     }
@@ -124,7 +220,13 @@ pub fn load_settings() -> Settings {
 /// Saved where the keybinds read it, so changing these needs no rebind.
 pub fn save_settings(s: &Settings) -> Result<(), String> {
     let (ms, cap) = (to_ms(s.seconds), to_ms(s.cap_seconds));
-    let mut args = vec!["set", "--ms", &ms, "--dir", s.direction.name(), "--cap-ms", &cap];
+    let whole_pc = if s.whole_pc { "true" } else { "false" };
+    let (lag_ms, jitter) = (s.lag_ms.to_string(), s.lag_jitter.to_string());
+    let style = if s.lag_choke { "choke" } else { "steady" };
+    let mut args = vec![
+        "set", "--whole-pc", whole_pc, "--ms", &ms, "--dir", s.direction.name(), "--cap-ms", &cap,
+        "--lag-ms", &lag_ms, "--lag-style", style, "--lag-jitter", &jitter,
+    ];
     if !s.app.is_empty() {
         args.extend(["--app", &s.app]);
     }
@@ -135,6 +237,8 @@ pub fn save_settings(s: &Settings) -> Result<(), String> {
 #[derive(Clone)]
 pub struct Live {
     pub status: Status,
+    /// Fake lag while it's on.
+    pub fake_lag: Option<FakeLag>,
     pub entries: Vec<Entry>,
     pub message: Option<String>,
 }
@@ -147,7 +251,7 @@ pub struct Monitor {
 
 impl Monitor {
     pub fn new() -> Self {
-        let live = Live { status: Status::Idle, entries: Vec::new(), message: None };
+        let live = Live { status: Status::Idle, fake_lag: None, entries: Vec::new(), message: None };
         Self { live: Arc::new(Mutex::new(live)), visible: Arc::new(AtomicBool::new(false)), started: false }
     }
 
@@ -195,11 +299,13 @@ impl Monitor {
 }
 
 fn refresh_status(live: &Mutex<Live>) {
-    let status = match run(&["status"]) {
-        Ok(text) => parse_status(&text),
-        Err(e) => Status::Down(e),
+    let (status, fake_lag) = match run(&["status"]) {
+        Ok(text) => (parse_status(&text), parse_fake_lag(&text)),
+        Err(e) => (Status::Down(e), None),
     };
-    live.lock().unwrap().status = status;
+    let mut live = live.lock().unwrap();
+    live.status = status;
+    live.fake_lag = fake_lag;
 }
 
 #[cfg(test)]
@@ -213,6 +319,15 @@ mod tests {
             parse_status("frozen toggle both 12345 a/b.scope"),
             Status::Frozen { mode: "toggle".into(), direction: "both".into(), left_ms: 12345 }
         );
+        assert_eq!(parse_status("idle lag 150 a/b.scope"), Status::Idle);
+    }
+
+    #[test]
+    fn reads_fake_lag() {
+        assert_eq!(parse_fake_lag("idle"), None);
+        assert_eq!(parse_fake_lag("idle lag 150 a/b.scope").map(|l| l.ms), Some(150));
+        let lag = parse_fake_lag("frozen toggle both 900 a/b.scope lag 80 a/b.scope style=choke jitter=30 out=12 in=0");
+        assert_eq!(lag, Some(FakeLag { ms: 80, choke: true, held: (12, 0) }));
     }
 
     #[test]
@@ -227,8 +342,20 @@ mod tests {
 
     #[test]
     fn reads_settings() {
-        let s = parse_settings("default_ms = 5000\ndirection = \"out\"\nmax_cap_ms = 10000\nlast_app = \"org.foo\"\n");
-        assert_eq!(s, Settings { seconds: 5.0, direction: Direction::Out, cap_seconds: 10.0, app: "org.foo".into() });
+        let s = parse_settings("default_ms = 5000\ndirection = \"out\"\nmax_cap_ms = 10000\nlast_app = \"org.foo\"\nwhole_pc = true\nlag_ms = 250\nlag_style = \"choke\"\nlag_jitter = 30\n");
+        assert_eq!(
+            s,
+            Settings {
+                seconds: 5.0,
+                direction: Direction::Out,
+                cap_seconds: 10.0,
+                app: "org.foo".into(),
+                whole_pc: true,
+                lag_ms: 250,
+                lag_choke: true,
+                lag_jitter: 30
+            }
+        );
     }
 
     #[test]

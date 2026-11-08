@@ -1,12 +1,23 @@
 # lagswitch
 
-A per-app network freezer for Linux. Pick a running app and its network traffic
-stops for as long as you choose, while the app keeps running and the rest of your
-PC stays online. Nothing is reset, so connections carry on when the freeze ends,
-as long as the other side hasn't given up on you by then.
+A network freezer for Linux with two kinds of freeze, plus fake lag:
 
-Built on EndeavourOS with Hyprland and kernel 6.18. It needs systemd, cgroup v2 and
-nftables 1.0.8 or newer.
+- **Whole PC:** everything on the PC loses its network at once, as if it were unplugged,
+  including voice chat and streams. It comes back instantly when the freeze ends,
+  because the connection itself never went down.
+- **One app:** the same for one app, while it keeps running and the rest of your PC
+  stays online.
+
+- **Fake lag:** for as long as you leave it on, either one app's ping goes up by the
+  amount you set (steady), or its outgoing packets are held back and sent in bursts
+  so others see it freeze and jump (choke). The app stays connected, and everything
+  else keeps its normal ping.
+
+Nothing is reset in either freeze mode, so connections carry on when the freeze ends, as long
+as the other side hasn't given up on you by then.
+
+Built on EndeavourOS with Hyprland and kernel 6.18. It needs systemd, cgroup v2,
+nftables 1.0.8 or newer and iproute2.
 
 **Using this in online games can break their rules and get your account banned.**
 It can't hide anything from a game server.
@@ -26,6 +37,26 @@ This builds as your user, then uses sudo to put `lagswitch` and `lagswitchd` in
 bash scripts/uninstall.sh
 ```
 
+### NixOS
+
+The repo is a flake with a NixOS module. In your system flake, add this repo as an input
+and its `nixosModules.default` to your modules, then:
+
+```nix
+services.lagswitch = {
+  enable = true;
+  user = "ari"; # the one user allowed to use it
+};
+```
+
+That runs `lagswitchd --user ari` as a root service with `nft` and `ip` on its path, and
+puts `lagswitch` on your PATH. The [hyprclick](https://github.com/AriCuteGirl/hyprclick)
+flake includes this module too.
+
+If your NixOS firewall uses nftables (`networking.nftables.enable`), reloading the
+firewall flushes every table, including lagswitch's. A freeze or fake lag running at that
+moment just stops.
+
 ## Use
 
 ```bash
@@ -35,11 +66,16 @@ lagswitch freeze --app org.example.App --ms 5000
 lagswitch toggle --app org.example.App
 lagswitch hold start --app org.example.App
 lagswitch hold stop
+lagswitch freeze --whole-pc --ms 5000           # the whole PC loses its network
 lagswitch release                               # end any freeze now
 lagswitch status
+lagswitch lag on --app org.example.App --ms 150   # +150 ms ping
+lagswitch lag on --style choke --ms 400 --jitter 30  # hold and burst, 280-400 ms each
+lagswitch lag toggle                            # on with the saved app and amount, or off
+lagswitch lag off
 ```
 
-`--app` takes a Flatpak app ID, part of one, or an exact process name. `--pid` takes
+`--whole-pc` also works with `toggle` and `hold start`. `--app` takes a Flatpak app ID, part of one, or an exact process name. `--pid` takes
 a process ID. Add `--dir in`, `--dir out` or `--dir both` (the default) to choose a
 direction, and `--cap-ms N` to change the failsafe for that freeze.
 
@@ -52,27 +88,49 @@ direction, and `--cap-ms N` to change the failsafe for that freeze.
 Every mode also stops at the failsafe cap: 30 seconds by default, and never more
 than 5 minutes whatever the config says.
 
+Fake lag is separate from freezes and has no cap: it stays on until `lag off` or
+`lag toggle`, from 1 to 5000 ms. There are two styles:
+
+- **steady** adds the amount to the app's ping, half on the way out and half on the
+  way in.
+- **choke** holds the app's outgoing packets for up to the amount, sends them all at
+  once, and starts holding again. The server gets your updates late and in bursts, so
+  others see you freeze and jump while your own game stays smooth. Incoming packets
+  aren't touched.
+
+`--jitter` (0 to 100) shortens each hold, or the steady delay for a quarter second at a
+time, by a random part of up to that percentage. If the app restarts, fake lag moves
+to the new instance within 2 seconds. `lagswitch status` shows how many packets it has
+held (`out=` and `in=`). Running `lag on` again while it's on changes the
+amount or the app. A freeze on a lagged app still freezes it, and the lag carries on
+afterwards. It only works on one app, not the whole PC.
+
 ## Config
 
-`~/.config/lagswitch/config.toml`. Without `--app` or `--pid`, the last app is used,
-which keeps keybinds short.
+`~/.config/lagswitch/config.toml`. With no target named, a command uses the saved
+choice, which keeps keybinds short: the whole PC if `whole_pc` is true, otherwise the
+last app.
 
 ```toml
 default_ms = 5000
 direction = "both"
 max_cap_ms = 30000
+whole_pc = false
+lag_ms = 150
+lag_style = "steady"
+lag_jitter = 0
 last_app = "org.example.App"
 ```
 
 Change it from the command line with `lagswitch set`:
 
 ```bash
-lagswitch set --app org.example.App --ms 5000 --dir both --cap-ms 30000
+lagswitch set --app org.example.App --ms 5000 --dir both --cap-ms 30000 --lag-ms 150 --lag-style choke --lag-jitter 30
 ```
 
 ## Hyprland keys
 
-[hyprclick](../README.md)'s Lag tab has an app picker,
+[hyprclick](https://github.com/AriCuteGirl/hyprclick)'s Lag tab has an app picker,
 settings and recordable keys, and writes the binds for you. To bind them by hand in
 Lua config:
 
@@ -82,6 +140,7 @@ hl.bind("ALT + X", hl.dsp.exec_cmd("/usr/local/bin/lagswitch toggle"))
 hl.bind("ALT + C", hl.dsp.exec_cmd("/usr/local/bin/lagswitch hold start"))
 hl.bind("ALT + C", hl.dsp.exec_cmd("/usr/local/bin/lagswitch hold stop"), { release = true })
 hl.bind("ALT + Alt_L", hl.dsp.exec_cmd("/usr/local/bin/lagswitch hold stop"), { release = true, non_consuming = true })
+hl.bind("ALT + B", hl.dsp.exec_cmd("/usr/local/bin/lagswitch lag toggle"))
 ```
 
 Or in `hyprland.conf`:
@@ -92,6 +151,7 @@ bind = ALT, X, exec, /usr/local/bin/lagswitch toggle
 bind = ALT, C, exec, /usr/local/bin/lagswitch hold start
 bindr = ALT, C, exec, /usr/local/bin/lagswitch hold stop
 bindrn = ALT, Alt_L, exec, /usr/local/bin/lagswitch hold stop
+bind = ALT, B, exec, /usr/local/bin/lagswitch lag toggle
 ```
 
 Don't use `ignore_mods` on the release bind: Hyprland then swallows that letter
@@ -99,37 +159,59 @@ everywhere, even typed without ALT.
 
 ## How it works
 
+### Whole PC
+
+An `unreachable` routing rule at priority 1 makes every send fail straight away with
+`ENETUNREACH`, the same error an app gets with no network. It sits just after the local
+table, so loopback and the PC's own addresses keep working. A nft rule drops incoming
+packets. Interfaces and addresses stay up, so ending a freeze is instant: both rules are
+removed and there's nothing to reconnect. They don't survive a reboot, and the daemon
+clears any left over when it starts.
+
+### One app
+
 Changing firewall rules needs root, so `lagswitchd` runs as a small root service and
 everything else talks to it over `/run/lagswitch/sock`, which only your user can open.
 The daemon owns the rules and the timer, so a freeze still ends on time if the client
 dies. It will only freeze cgroups under your own `user.slice`, and it refuses ones
 shared with your whole session.
 
-All rules live in two tables named `lagswitch`, so your own firewall rules are never
+Rules live in one table named `lagswitch`, so your own firewall rules are never
 touched. They are swapped in and out as one atomic change:
 
 - **Incoming:** a rule in the input hook drops packets for the app's sockets using
   `socket cgroupv2`.
-- **Outgoing:** the output hook only marks the app's packets, and a netdev egress chain
-  drops them. Dropping in the output hook itself makes UDP `send()` fail with `EPERM`,
-  which the app can notice and treat as a network failure. This way `send()` succeeds
-  and the packets just vanish, like real packet loss.
+- **Outgoing:** a rule in the output hook drops the app's packets, which makes its UDP
+  `send()` fail straight away with `EPERM`, so the game sees its network fail.
 - **Loopback** isn't touched, so an app's local connections keep working.
+
+### Fake lag
+
+A rule in the output hook and one in the input hook send the app's packets to netfilter
+queue 4242, the same `socket cgroupv2` match as a freeze (choke only queues outgoing).
+The daemon listens on that queue and decides when each packet goes: steady adds half the
+delay each way, so the round trip a game measures grows by the full amount, and choke
+gives every packet in a hold the same release time. It only reads each
+packet's ID, never its contents.
+
+The rules use `queue flags bypass`: if the daemon isn't listening, packets go straight
+through rather than getting stuck. If more than 8192 packets are waiting at once, the
+extra ones pass undelayed.
 
 Rules are removed on normal exit, on SIGINT and SIGTERM, on panic, and when the daemon
 starts. If the daemon is killed outright, systemd cleans up and restarts it.
 
 ## Limitations
 
-- **Whole cgroups only.** Everything in a cgroup freezes together, and `lagswitch list`
+- **Whole PC blocks everything**, including voice chat, and the direction setting doesn't
+  apply to it. Traffic that's forwarded for VMs and containers is cut too.
+- **One app mode freezes whole cgroups.** Everything in a cgroup freezes together, and `lagswitch list`
   shows how many processes that is. Apps with no scope of their own sit in your login
   session and are marked `shared`, which can't be frozen. A game started by another
   program can share that program's cgroup, and then both freeze.
 - **Sockets count, not processes.** Traffic is matched by the cgroup a socket was created
   in. A socket passed to a process outside the cgroup still matches the original cgroup.
 - **Several instances.** Freezing an app ID freezes every running instance of it.
-- **Network devices** are listed when a freeze starts. One added during a freeze isn't
-  covered for outgoing traffic until the next freeze.
 - **Incoming-only freezes** can briefly slow other apps talking to the same server as the
   frozen app, and a fetch right after one can occasionally fail. Other servers weren't
   affected in testing and the cause isn't known. This wasn't seen with `both` or `out`.
@@ -139,6 +221,8 @@ starts. If the daemon is killed outright, systemd cleans up and restarts it.
   connection.
 - **Long freezes** can still get you kicked if a game times out silent clients. The limit
   depends on the game.
+- **Fake lag can't see inside the game.** Triggers like "only while shooting" aren't
+  possible from the network side. Pings (ICMP) aren't delayed on the way in.
 
 ## Testing
 
@@ -151,6 +235,18 @@ default, or pass another app that isn't running):
 
 ```bash
 bash scripts/verify-daemon.sh org.kde.okular
+```
+
+This one checks both modes and takes the whole PC offline several times:
+
+```bash
+bash scripts/verify-whole-pc.sh
+```
+
+Fake lag, on a throwaway process, measured over TCP and UDP (300 ms by default):
+
+```bash
+bash scripts/verify-lag.sh 300
 ```
 
 ```bash

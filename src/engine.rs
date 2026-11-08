@@ -3,18 +3,21 @@
 use crate::config::{Config, Mode};
 use crate::desktop::{self, Desktop};
 use crate::hypr;
-use evdev::uinput::VirtualDevice;
-use evdev::{AttributeSet, EventType, InputEvent, KeyCode, RelativeAxisCode};
+use crate::input::Mouse;
+#[cfg(windows)]
+use crate::compat::UnixStream;
 use std::io::{BufRead, BufReader};
+#[cfg(unix)]
 use std::os::unix::net::UnixStream;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-type Device = Arc<Mutex<VirtualDevice>>;
+type Device = Arc<Mutex<Mouse>>;
 
-const KDE_FOCUS_POLL: Duration = Duration::from_millis(250);
+/// How often focus is checked where there are no focus events.
+const FOCUS_POLL: Duration = Duration::from_millis(250);
 /// KWin drops events from a new uinput mouse for a few hundred ms (300 ms
 /// was too short, 1.5 s enough).
 const KDE_DEVICE_SETTLE: Duration = Duration::from_millis(1000);
@@ -113,7 +116,7 @@ impl Engine {
         let dev = match &self.mouse {
             Some(d) => d.clone(),
             None => {
-                let d = Arc::new(Mutex::new(make_mouse()?));
+                let d = Arc::new(Mutex::new(Mouse::new()?));
                 // libinput needs a moment to adopt a fresh device before it
                 // forwards its events (KWin is slower about it).
                 std::thread::sleep(if desktop::get() == Desktop::Kde { KDE_DEVICE_SETTLE } else { Duration::from_millis(250) });
@@ -122,13 +125,15 @@ impl Engine {
             }
         };
         let code = cfg.button.code();
-        let target = if cfg.cursor_only_in_target || cfg.cursor_lock {
+        // Sway doesn't report the cursor, so the lock could never find the spot.
+        let lock_on = cfg.cursor_lock && desktop::get() != Desktop::Sway;
+        let target = if cfg.cursor_only_in_target || lock_on {
             Some(desktop::find_target(&cfg.target_class, &cfg.target_title).ok_or_else(|| format!("window '{}' not found", cfg.target_class))?)
         } else {
             None
         };
         let gate = target.as_ref().filter(|_| cfg.cursor_only_in_target).map(|t| t.address.clone());
-        let lock = target.as_ref().filter(|_| cfg.cursor_lock).map(|t| Mutex::new(SpotLock::new(t, cfg.pos, dev.clone())));
+        let lock = target.as_ref().filter(|_| lock_on).map(|t| Mutex::new(SpotLock::new(t, cfg.pos, dev.clone())));
 
         let stop = Arc::new(AtomicBool::new(false));
         let focused = Arc::new(AtomicBool::new(true));
@@ -139,8 +144,7 @@ impl Engine {
 
         let locked = lock.is_some();
         let press = move |down: bool| {
-            let ev = InputEvent::new(EventType::KEY.0, code, down as i32);
-            let _ = dev.lock().unwrap().emit(&[ev]);
+            let _ = dev.lock().unwrap().button(code, down);
         };
         // The lock pulls the cursor back onto the spot before every click.
         let allowed = move || focused.load(Ordering::Relaxed) && lock.as_ref().is_none_or(|l| l.lock().unwrap().pull());
@@ -201,8 +205,7 @@ impl SpotLock {
                     if units == 0 && d[i].abs() >= 1.0 { d[i].signum() as i32 } else { units }
                 })
                 .collect();
-            let rel = |axis: RelativeAxisCode, v: i32| InputEvent::new(EventType::RELATIVE.0, axis.0, v);
-            if self.mouse.lock().unwrap().emit(&[rel(RelativeAxisCode::REL_X, send[0]), rel(RelativeAxisCode::REL_Y, send[1])]).is_err() {
+            if self.mouse.lock().unwrap().move_by(send[0], send[1]).is_err() {
                 return false;
             }
             std::thread::sleep(LOCK_SETTLE);
@@ -222,25 +225,6 @@ impl Drop for Engine {
     fn drop(&mut self) {
         self.stop();
     }
-}
-
-fn uinput_err(e: std::io::Error) -> String {
-    format!("/dev/uinput: {e} (are you in the 'input' group?)")
-}
-
-fn make_mouse() -> Result<VirtualDevice, String> {
-    let keys = AttributeSet::from_iter([KeyCode::BTN_LEFT, KeyCode::BTN_RIGHT, KeyCode::BTN_MIDDLE]);
-    // libinput only treats it as a pointer if it has relative axes.
-    let axes = AttributeSet::from_iter([RelativeAxisCode::REL_X, RelativeAxisCode::REL_Y]);
-    VirtualDevice::builder()
-        .map_err(uinput_err)?
-        .name("hyprclick virtual mouse")
-        .with_keys(&keys)
-        .map_err(uinput_err)?
-        .with_relative_axes(&axes)
-        .map_err(uinput_err)?
-        .build()
-        .map_err(uinput_err)
 }
 
 /// Fixed-rate click loop. Deadlines are absolute so timing never drifts; the
@@ -292,13 +276,13 @@ fn sleep_until(deadline: Instant) {
 }
 
 /// Tracks whether `address` has keyboard focus: Hyprland's event socket,
-/// or asking KWin a few times a second.
+/// or asking a few times a second everywhere else.
 fn watch_focus(address: String, focused: Arc<AtomicBool>, stop: Arc<AtomicBool>) {
-    if desktop::get() == Desktop::Kde {
+    if desktop::get() != Desktop::Hyprland {
         std::thread::spawn(move || {
             while !stop.load(Ordering::Relaxed) {
                 focused.store(desktop::active_address().as_deref() == Some(address.as_str()), Ordering::Relaxed);
-                std::thread::sleep(KDE_FOCUS_POLL);
+                std::thread::sleep(FOCUS_POLL);
             }
         });
         return;

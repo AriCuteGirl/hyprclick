@@ -1,7 +1,12 @@
 pub mod cgroup;
+pub mod cli;
 pub mod config;
+#[cfg(target_os = "linux")]
+pub mod delay;
+pub mod network;
 pub mod nft;
 pub mod proto;
 pub mod rules;
+pub mod shape;
 pub mod state;
 pub mod timer;

@@ -56,6 +56,7 @@ enum KeyFor {
     LagTimed,
     LagToggle,
     LagHold,
+    LagFake,
 }
 
 struct App {
@@ -277,7 +278,8 @@ impl eframe::App for App {
                                 (Tab::Afk, format!("{I_COFFEE} AFK")),
                                 (Tab::Key, format!("{I_KEY} Key")),
                             ];
-                            if desktop::get() == Desktop::Hyprland {
+                            // Its keys are compositor binds, which KDE doesn't have here.
+                            if desktop::get() != Desktop::Kde {
                                 tabs.push((Tab::Lag, format!("{I_LAG} Lag")));
                             }
                             segmented(ui, "tab", &mut self.tab, &tabs);
@@ -432,6 +434,10 @@ impl App {
                     toggle_switch(ui, &mut c.cfg.cursor_only_in_target);
                     ui.label(RichText::new("Only click while this window is focused").color(pal().text));
                 });
+                // The lock steers by where the cursor is, which Sway doesn't tell apps.
+                if desktop::get() == Desktop::Sway {
+                    return;
+                }
                 ui.horizontal(|ui| {
                     toggle_switch(ui, &mut c.cfg.cursor_lock);
                     ui.label(RichText::new("Lock cursor to the picked spot").color(pal().text));
@@ -679,6 +685,8 @@ impl App {
             }
             let hint = match desktop::get() {
                 Desktop::Hyprland => "Side mouse buttons work too. SUPER combos and keys Hyprland already uses can't be recorded, type those.",
+                Desktop::Sway => "Goes into ~/.config/sway/hyprclick.conf. Side mouse buttons work too. SUPER combos can't be recorded, type those.",
+                Desktop::Windows => "Works anywhere while hyprclick is open (minimized is fine). Mouse buttons can't be hotkeys on Windows.",
                 Desktop::Kde => "Becomes a KDE global shortcut (System Settings → Shortcuts). KDE can't bind mouse buttons. SUPER (Meta) combos can't be recorded, type those.",
             };
             ui.label(RichText::new(hint).color(pal().weak).size(11.0));
@@ -700,6 +708,7 @@ impl App {
             (KeyFor::LagTimed, &c.cfg.lag_timed_key),
             (KeyFor::LagToggle, &c.cfg.lag_toggle_key),
             (KeyFor::LagHold, &c.cfg.lag_hold_key),
+            (KeyFor::LagFake, &c.cfg.lag_fake_key),
         ]
         .into_iter()
         .filter(|(which, _)| *which != target)
@@ -718,6 +727,7 @@ impl App {
             KeyFor::LagTimed => c.cfg.lag_timed_key = hk,
             KeyFor::LagToggle => c.cfg.lag_toggle_key = hk,
             KeyFor::LagHold => c.cfg.lag_hold_key = hk,
+            KeyFor::LagFake => c.cfg.lag_fake_key = hk,
         }
         self.apply_hotkey(c);
         if target != KeyFor::Click {
@@ -728,12 +738,31 @@ impl App {
     fn lag_card(&mut self, ui: &mut Ui, c: &mut Controller) {
         card(ui, None, |ui| {
             if !lag::installed() {
-                ui.label(RichText::new("lagswitch isn't installed").color(pal().text));
+                let (title, help) = if desktop::get() == Desktop::Windows {
+                    ("WinDivert is missing", "Keep WinDivert.dll and WinDivert64.sys in the same folder as hyprclick.exe, as they come in the zip.")
+                } else {
+                    ("lagswitch isn't installed", "It's a separate root service, so hyprclick itself never needs root. Install it with lagswitch/scripts/install.sh from the hyprclick repo, or on NixOS turn on services.lagswitch from its flake.")
+                };
+                ui.label(RichText::new(title).color(pal().text));
+                ui.label(RichText::new(help).color(pal().weak).size(11.0));
+                return;
+            }
+            if lag::needs_admin() {
+                ui.label(RichText::new("The Lag tab needs administrator rights").color(pal().text));
                 ui.label(
-                    RichText::new("It's a separate root service, so hyprclick itself never needs root. Install it with lagswitch/scripts/install.sh from the hyprclick repo.")
+                    RichText::new("Windows only lets an administrator hold back or drop network packets. The clicker works either way.")
                         .color(pal().weak)
                         .size(11.0),
                 );
+                if ui.button("Restart as administrator").clicked() {
+                    if lag::restart_as_admin() {
+                        std::process::exit(0);
+                    }
+                    self.lag_msg = Some("Windows didn't restart hyprclick as administrator".to_string());
+                }
+                if let Some(msg) = &self.lag_msg {
+                    ui.label(RichText::new(format!("⚠ {msg}")).color(pal().bad).size(11.0));
+                }
                 return;
             }
             self.lag.show();
@@ -757,7 +786,8 @@ impl App {
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     let frozen = matches!(live.status, lag::Status::Frozen { .. });
                     let label = if frozen { "Release" } else { "Freeze now" };
-                    let click = ui.add_enabled(!down && !settings.app.is_empty(), egui::Button::new(label)).clicked();
+                    let ready = settings.whole_pc || !settings.app.is_empty();
+                    let click = ui.add_enabled(!down && ready, egui::Button::new(label)).clicked();
                     if click {
                         // Same as pressing the timed key.
                         let args = if frozen { vec!["release"] } else { vec!["freeze"] };
@@ -773,20 +803,31 @@ impl App {
             }
 
             ui.separator();
-            ui.add(egui::TextEdit::singleline(&mut self.lag_filter).hint_text("Search apps").desired_width(f32::INFINITY));
-            let filter = self.lag_filter.to_lowercase();
-            egui::ScrollArea::vertical().id_salt("lag_apps").max_height(110.0).auto_shrink([false, true]).show(ui, |ui| {
-                for e in live.entries.iter().filter(|e| e.name.to_lowercase().contains(&filter)) {
-                    let selected = e.name == settings.app;
-                    let label = if e.processes > 1 { format!("{} ({})", e.name, e.processes) } else { e.name.clone() };
-                    let text = RichText::new(label).size(12.0).color(if e.is_flatpak { pal().text } else { pal().weak });
-                    let row = ui.add_enabled(e.freezable, egui::Button::selectable(selected, text));
-                    let row = row.on_disabled_hover_text("Shared with your whole session, so it can't be frozen alone");
-                    if row.clicked() {
-                        settings.app = e.name.clone();
+            let scopes = [(true, "Whole PC".to_string()), (false, "One app".to_string())];
+            segmented(ui, "lag_scope", &mut settings.whole_pc, &scopes);
+            if settings.whole_pc {
+                ui.label(
+                    RichText::new("Cuts everything on this PC off the network, including calls. It comes back instantly when the freeze ends.")
+                        .color(pal().weak)
+                        .size(11.0),
+                );
+            } else {
+                ui.add(egui::TextEdit::singleline(&mut self.lag_filter).hint_text("Search apps").desired_width(f32::INFINITY));
+                let filter = self.lag_filter.to_lowercase();
+                egui::ScrollArea::vertical().id_salt("lag_apps").max_height(110.0).auto_shrink([false, true]).show(ui, |ui| {
+                    for e in live.entries.iter().filter(|e| e.name.to_lowercase().contains(&filter)) {
+                        let selected = e.name == settings.app;
+                        let label = if e.processes > 1 { format!("{} ({})", e.name, e.processes) } else { e.name.clone() };
+                        let text = RichText::new(label).size(12.0).color(if e.is_flatpak { pal().text } else { pal().weak });
+                        let row = ui.add_enabled(e.freezable, egui::Button::selectable(selected, text));
+                        let row = row.on_disabled_hover_text("Shared with your whole session, so it can't be frozen alone");
+                        if row.clicked() {
+                            settings.app = e.name.clone();
+                        }
                     }
-                }
-            });
+                });
+
+            }
 
             ui.separator();
             ui.horizontal(|ui| {
@@ -803,7 +844,9 @@ impl App {
                 (lag::Direction::In, "Incoming".to_string()),
                 (lag::Direction::Out, "Outgoing".to_string()),
             ];
-            segmented(ui, "lag_dir", &mut settings.direction, &directions);
+            if !settings.whole_pc {
+                segmented(ui, "lag_dir", &mut settings.direction, &directions);
+            }
 
             ui.separator();
             let keys = [
@@ -826,10 +869,73 @@ impl App {
             }
             ui.label(RichText::new("Press Timed again to end a freeze early. Every mode stops at Max.").color(pal().weak).size(11.0));
 
+            ui.separator();
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("Fake lag").color(pal().text));
+                if let Some(lag) = &live.fake_lag {
+                    let text = if lag.choke { format!("choke {} ms", lag.ms) } else { format!("+{} ms", lag.ms) };
+                    pill(ui, &text, pal().accent);
+                }
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    let on = live.fake_lag.is_some();
+                    let ready = !settings.whole_pc && !settings.app.is_empty();
+                    let label = if on { "Stop" } else { "Start" };
+                    let button = ui.add_enabled(!down && (on || ready), egui::Button::new(label));
+                    let button = button.on_disabled_hover_text("Pick an app under One app first");
+                    if button.clicked() {
+                        // Same as pressing the fake lag key.
+                        self.lag.send(vec!["lag".into(), "toggle".into()]);
+                    }
+                    ui.add(egui::DragValue::new(&mut settings.lag_ms).range(10..=5000).speed(5.0).suffix(" ms"));
+                });
+            });
+            let styles = [(false, "Steady".to_string()), (true, "Choke".to_string())];
+            segmented(ui, "lag_style", &mut settings.lag_choke, &styles);
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("Jitter").color(pal().text));
+                ui.add(egui::Slider::new(&mut settings.lag_jitter, 0..=100).suffix(" %"));
+            });
+            // Proof it reaches the app: 0 held means its traffic isn't passing through.
+            if let Some(lag) = &live.fake_lag {
+                let held = lag.held.0 + lag.held.1;
+                let (text, color) = if held == 0 {
+                    ("No packets held yet: is the app sending anything?".to_string(), pal().bad)
+                } else {
+                    (format!("{held} packets held so far"), pal().weak)
+                };
+                ui.label(RichText::new(text).color(color).size(11.0));
+            }
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("Fake lag key").color(pal().text));
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    let recording = matches!(self.recording, Some((KeyFor::LagFake, _)));
+                    let text = if recording { "press a key…".to_string() } else { c.cfg.lag_fake_key.label() };
+                    if ui.button(RichText::new(text).color(pal().accent)).clicked() && !recording {
+                        self.recording = Some((KeyFor::LagFake, Instant::now()));
+                        self.lag_msg = None;
+                    }
+                });
+            });
+            let hint = if settings.whole_pc {
+                "Fake lag works on one app: switch to One app and pick it."
+            } else if settings.lag_choke {
+                "Holds the app's outgoing packets for up to this long, then sends them all at once, again and again. Others see you freeze and jump; your own game stays smooth."
+            } else {
+                "Adds this much to the app's ping until you stop it. Everything else keeps its normal ping."
+            };
+            ui.label(RichText::new(hint).color(pal().weak).size(11.0));
+
             // Write once a drag ends, where the keybinds will read it.
             if self.lag_saved.as_ref() != Some(&settings) && !ui.input(|i| i.pointer.any_down()) {
+                let new_ms = self.lag_saved.as_ref().is_some_and(|old| {
+                    (old.lag_ms, old.lag_choke, old.lag_jitter) != (settings.lag_ms, settings.lag_choke, settings.lag_jitter)
+                });
                 self.lag_msg = lag::save_settings(&settings).err();
                 self.lag_saved = Some(settings.clone());
+                // New fake lag settings take effect straight away while it's on.
+                if new_ms && live.fake_lag.is_some() && self.lag_msg.is_none() {
+                    self.lag.send(vec!["lag".into(), "on".into()]);
+                }
             }
             self.lag_settings = Some(settings);
             ui.ctx().request_repaint_after(Duration::from_millis(250));
@@ -1062,6 +1168,8 @@ fn setup_style(ctx: &egui::Context) {
     };
     let regular = load("rice", &t.font_regular);
     let strong = load("rice-bold", &t.font_bold);
+    let symbols = load("symbols", &crate::theme::symbols_font());
+    let fallback = load("fallback", &crate::theme::fallback_font());
 
     for family in [FontFamily::Proportional, FontFamily::Monospace] {
         if regular {
@@ -1071,6 +1179,11 @@ fn setup_style(ctx: &egui::Context) {
     let mut bold_family = Vec::new();
     if strong {
         bold_family.push("rice-bold".to_string());
+    }
+    for (loaded, name) in [(symbols, "symbols"), (fallback, "fallback")] {
+        if loaded {
+            fonts.families.entry(FontFamily::Proportional).or_default().push(name.into());
+        }
     }
     bold_family.extend(fonts.families[&FontFamily::Proportional].iter().cloned());
     fonts.families.insert(bold(), bold_family);
