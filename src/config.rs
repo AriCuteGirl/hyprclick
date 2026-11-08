@@ -108,6 +108,8 @@ pub struct Config {
     /// Show freezes and fake lag on screen (`hyprclick overlay`, Linux).
     pub lag_overlay: bool,
     pub lag_overlay_place: OverlayPlace,
+    /// Lag keys pop up a notification saying what they did.
+    pub lag_notify: bool,
 }
 
 impl Default for Config {
@@ -139,6 +141,7 @@ impl Default for Config {
             lag_fake_key: crate::hotkey::Hotkey { mods: vec!["ALT".into()], key: "B".into() },
             lag_overlay: true,
             lag_overlay_place: OverlayPlace::Top,
+            lag_notify: true,
         }
     }
 }

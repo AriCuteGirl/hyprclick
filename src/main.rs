@@ -15,7 +15,6 @@ mod ipc;
 #[cfg(target_os = "linux")]
 mod kde;
 mod lag;
-#[cfg(target_os = "linux")]
 mod overlay;
 mod setup;
 mod sway;
@@ -76,6 +75,8 @@ fn main() {
         Some("overlay") => overlay::run(),
         #[cfg(windows)]
         Some("lag-probe") => winlag::probe(),
+        #[cfg(windows)]
+        Some("overlay-demo") => overlay::demo(),
         #[cfg(windows)]
         Some("lag-selftest") => std::process::exit(if winlag::selftest() { 0 } else { 1 }),
         _ => print!("{USAGE}"),
@@ -170,7 +171,6 @@ fn gui() {
     if let Err(e) = hotkeys::reload() {
         desktop::notify(&e);
     }
-    #[cfg(target_os = "linux")]
     overlay::ensure_running();
     ui::run();
     ipc::cleanup();

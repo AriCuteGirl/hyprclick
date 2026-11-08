@@ -925,7 +925,6 @@ impl App {
             };
             ui.label(RichText::new(hint).color(pal().weak).size(11.0));
 
-            #[cfg(target_os = "linux")]
             ui.horizontal(|ui| {
                 if toggle_switch(ui, &mut c.cfg.lag_overlay).changed() && c.cfg.lag_overlay {
                     // The overlay reads the setting from disk.
@@ -935,7 +934,15 @@ impl App {
                 ui.label(RichText::new("Show on screen").color(pal().text))
                     .on_hover_text("A banner on screen while frozen or lagging, with the time left");
             });
-            #[cfg(target_os = "linux")]
+            ui.horizontal(|ui| {
+                let changed = toggle_switch(ui, &mut c.cfg.lag_notify).changed();
+                ui.label(RichText::new("Notifications").color(pal().text))
+                    .on_hover_text("A pop-up each time a lag key freezes, unfreezes or toggles fake lag");
+                // The keybinds carry the setting, so write them again.
+                if changed && cfg!(unix) {
+                    self.apply_hotkey(c);
+                }
+            });
             if c.cfg.lag_overlay {
                 use crate::config::OverlayPlace;
                 let places = [(OverlayPlace::Top, "Top".to_string()), (OverlayPlace::Middle, "Middle".to_string()), (OverlayPlace::Bottom, "Bottom".to_string())];

@@ -36,10 +36,11 @@ pub fn find_program(name: &str) -> Option<PathBuf> {
     found.iter().find(|p| !p.starts_with("/nix/store")).or(found.first()).cloned()
 }
 
-/// lagswitch as the binds run it: errors show as a notification, since nobody
-/// sees a keybind's output.
-fn notifying(cli: &Path) -> String {
-    format!("{} --notify", cli.display())
+/// lagswitch as the binds run it. With --notify it says what each key did, and
+/// any error, as a notification, since nobody sees a keybind's output. The Lag
+/// tab can turn that off; the overlay still shows what's going on.
+fn notifying(cli: &Path, cfg: &Config) -> String {
+    if cfg.lag_notify { format!("{} --notify", cli.display()) } else { cli.display().to_string() }
 }
 
 /// Path of the binary the hotkey should run.
@@ -142,7 +143,7 @@ fn sway_file(cfg: &Config) -> String {
         exe = exe(),
     );
     if let Some(cli) = lag::cli() {
-        out += &sway_lag_binds(cfg, &notifying(&cli));
+        out += &sway_lag_binds(cfg, &notifying(&cli, cfg));
     }
     out
 }
@@ -362,7 +363,7 @@ fn lua_file(cfg: &Config) -> String {
         exe = exe(),
     );
     if let Some(cli) = lag::cli() {
-        out += &lua_lag_binds(cfg, &notifying(&cli));
+        out += &lua_lag_binds(cfg, &notifying(&cli, cfg));
     }
     out
 }
@@ -454,7 +455,7 @@ fn conf_file(cfg: &Config, rules: bool) -> String {
         );
     }
     if let Some(cli) = lag::cli() {
-        out += &conf_lag_binds(cfg, &notifying(&cli));
+        out += &conf_lag_binds(cfg, &notifying(&cli, cfg));
     }
     out
 }
@@ -567,6 +568,14 @@ mod tests {
         assert_eq!(mouse.sway(), "Ctrl+Shift+button8");
         assert_eq!(sway_mouse_flag(&mouse), "--whole-window ");
         assert_eq!(Hotkey { mods: vec!["SUPER".into()], key: "F5".into() }.sway(), "Mod4+F5");
+    }
+
+    #[test]
+    fn notifications_can_be_turned_off() {
+        let cli = Path::new("/usr/local/bin/lagswitch");
+        assert_eq!(notifying(cli, &cfg()), "/usr/local/bin/lagswitch --notify");
+        let quiet = Config { lag_notify: false, ..cfg() };
+        assert_eq!(notifying(cli, &quiet), "/usr/local/bin/lagswitch");
     }
 
     #[test]

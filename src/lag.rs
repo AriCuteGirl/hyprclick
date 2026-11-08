@@ -56,13 +56,19 @@ fn run(args: &[&str]) -> Result<String, String> {
     lagswitch::cli::run(args, &crate::winlag::Local).map(|outcome| outcome.output)
 }
 
+/// lagswitch's status line, or None when it can't be reached.
+#[cfg(windows)]
+pub fn status_text() -> Option<String> {
+    run(&["status"]).ok()
+}
+
 /// A Lag key: run the command and show what happened as a notification.
 #[cfg(windows)]
 pub fn key(args: &[&str]) {
     let args = args.iter().map(|a| a.to_string()).collect();
     match lagswitch::cli::run(args, &crate::winlag::Local) {
         Ok(outcome) => {
-            if let Some(notice) = outcome.notice {
+            if let Some(notice) = outcome.notice.filter(|_| crate::config::Config::load().lag_notify) {
                 crate::win::notify(&notice);
             }
         }

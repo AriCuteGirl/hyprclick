@@ -1,37 +1,23 @@
-//! `hyprclick overlay`: a see-through banner a bit above the middle of the
-//! screen while lagswitch freezes the app or fakes lag, with a countdown for
-//! timed freezes. It is a Wayland layer surface on the overlay layer, so it
-//! shows over fullscreen games, takes no clicks or keys, and only exists while
-//! there's something to show. It asks lagswitch's daemon for its status ten
-//! times a second, the same `status` line the CLI prints.
+//! The lag overlay: a small see-through banner while lagswitch freezes the
+//! app or fakes lag, with a countdown for timed freezes, and a short "off"
+//! flash when that ends. It takes no clicks or keys and is only on screen
+//! while there's something to show. The drawing is shared; showing it is a
+//! Wayland layer surface on Linux (`hyprclick overlay`, its own process) and a
+//! layered topmost window on Windows (a thread in the hyprclick window).
 
 use crate::config::{Config, OverlayPlace};
-use crate::lag::{self, FakeLag, Status};
+use crate::lag::{FakeLag, Status};
 use ab_glyph::{Font, FontVec, PxScale, ScaleFont};
-use smithay_client_toolkit::{
-    compositor::{CompositorHandler, CompositorState, Region},
-    delegate_compositor, delegate_layer, delegate_output, delegate_registry, delegate_shm,
-    output::{OutputHandler, OutputState},
-    reexports::{
-        calloop::EventLoop,
-        calloop_wayland_source::WaylandSource,
-        client::{
-            Connection, QueueHandle,
-            globals::registry_queue_init,
-            protocol::{wl_output, wl_shm, wl_surface},
-        },
-    },
-    registry::{ProvidesRegistryState, RegistryState},
-    registry_handlers,
-    shell::{
-        WaylandSurface,
-        wlr_layer::{Anchor, KeyboardInteractivity, Layer, LayerShell, LayerShellHandler, LayerSurface, LayerSurfaceConfigure},
-    },
-    shm::{Shm, ShmHandler, slot::SlotPool},
-};
-use std::io::{BufRead, BufReader, Write};
-use std::os::unix::net::UnixStream;
 use std::time::{Duration, Instant};
+
+#[cfg(target_os = "linux")]
+mod wayland;
+#[cfg(target_os = "linux")]
+pub use wayland::{ensure_running, run};
+#[cfg(windows)]
+mod windows;
+#[cfg(windows)]
+pub use windows::{demo, ensure_running};
 
 /// At the top or bottom the surface is just the banner. In the middle it is
 /// centered on the screen and `H` tall; the banner fills its top `BANNER_H`
@@ -43,7 +29,37 @@ const BANNER_H: u32 = 60;
 const TICK: Duration = Duration::from_millis(100);
 /// How long "UNFROZEN" / "FAKE LAG OFF" stays up.
 const OFF_FOR: Duration = Duration::from_millis(1200);
-const SOCKET: &str = "/run/lagswitch/sock";
+
+/// Surface height for a place.
+fn height(place: OverlayPlace) -> u32 {
+    if place == OverlayPlace::Middle { H } else { BANNER_H }
+}
+
+/// Status lines in, banners out, with the Lag tab's settings read once a second.
+struct Feed {
+    watch: Watch,
+    checked: Option<Instant>,
+    enabled: bool,
+    place: OverlayPlace,
+}
+
+impl Feed {
+    fn new() -> Self {
+        Self { watch: Watch::default(), checked: None, enabled: true, place: OverlayPlace::default() }
+    }
+
+    /// What to show now, given lagswitch's status line (None when it's not there).
+    fn next(&mut self, status: Option<String>) -> Option<Banner> {
+        let now = Instant::now();
+        if self.checked.is_none_or(|t| now.duration_since(t) >= Duration::from_secs(1)) {
+            let cfg = Config::load();
+            (self.enabled, self.place, self.checked) = (cfg.lag_overlay, cfg.lag_overlay_place, Some(now));
+        }
+        let text = status?;
+        let fake_lag = crate::lag::parse_fake_lag(&text);
+        self.watch.update(&crate::lag::parse_status(&text), fake_lag.as_ref(), now).filter(|_| self.enabled)
+    }
+}
 
 #[derive(Clone, PartialEq, Debug)]
 struct Banner {
@@ -91,13 +107,19 @@ impl Watch {
         if let Status::Frozen { mode, left_ms, .. } = status {
             self.off = None;
             self.total_ms = self.total_ms.max(*left_ms);
-            let (mut detail, bar) = match mode.as_str() {
-                "timed" => (format!("{:.1} s", *left_ms as f64 / 1000.0), Some(*left_ms as f32 / self.total_ms.max(1) as f32)),
-                "hold" => ("while held".to_string(), None),
-                _ => ("press again".to_string(), None),
+            // Toggle and hold freezes have a time limit too, so they count down as well.
+            let seconds = format!("{:.1} s", *left_ms as f64 / 1000.0);
+            let bar = (*left_ms > 0).then(|| *left_ms as f32 / self.total_ms.max(1) as f32);
+            let mut detail = match (mode.as_str(), *left_ms > 0) {
+                ("timed", _) => seconds,
+                ("hold", true) => format!("held · {seconds}"),
+                ("hold", false) => "while held".to_string(),
+                (_, true) => format!("{seconds} left"),
+                (_, false) => "press again".to_string(),
             };
-            if let Some(lag) = lag_text {
-                detail += &format!(" · lag {lag}");
+            // Short, to fit next to the time.
+            if let Some(l) = fake_lag {
+                detail += &if l.choke { format!(" · choke {}", l.ms) } else { format!(" · +{} ms", l.ms) };
             }
             return Some(Banner { title: "FROZEN".into(), detail, tone: Tone::Frozen, bar });
         }
@@ -116,248 +138,25 @@ fn off_banner(title: &str) -> Banner {
     Banner { title: title.into(), detail: String::new(), tone: Tone::Off, bar: None }
 }
 
-/// The daemon's status line as the CLI prints it, or None when it isn't running.
-fn ask_status() -> Option<String> {
-    let mut stream = UnixStream::connect(SOCKET).ok()?;
-    stream.set_read_timeout(Some(Duration::from_millis(500))).ok()?;
-    stream.set_write_timeout(Some(Duration::from_millis(500))).ok()?;
-    writeln!(stream, "status").ok()?;
-    let mut reply = String::new();
-    BufReader::new(&stream).read_line(&mut reply).ok()?;
-    // "ok idle", or "err ..." which counts as nothing to show.
-    reply.trim().strip_prefix("ok ").map(str::to_string)
-}
-
-pub fn run() {
-    // One overlay per session: a second `hyprclick overlay` just leaves.
-    let Ok(_lock) = single_instance() else { return };
-    if let Err(e) = serve() {
-        eprintln!("hyprclick overlay: {e}");
-        std::process::exit(1);
-    }
-}
-
-fn single_instance() -> std::io::Result<std::os::unix::net::UnixListener> {
-    use std::os::linux::net::SocketAddrExt;
-    let addr = std::os::unix::net::SocketAddr::from_abstract_name(b"hyprclick-overlay")?;
-    std::os::unix::net::UnixListener::bind_addr(&addr)
-}
-
-/// Start the overlay in the background if it's turned on and not running yet.
-pub fn ensure_running() {
-    if !Config::load().lag_overlay || !lag::installed() {
-        return;
-    }
-    let Ok(exe) = std::env::current_exe() else { return };
-    let _ = std::process::Command::new(exe)
-        .arg("overlay")
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn();
-}
-
-fn serve() -> Result<(), String> {
-    let fonts = Fonts::load()?;
-    let conn = Connection::connect_to_env().map_err(|e| format!("no Wayland session: {e}"))?;
-    let (globals, queue) = registry_queue_init::<Overlay>(&conn).map_err(|e| e.to_string())?;
-    let qh = queue.handle();
-    let compositor = CompositorState::bind(&globals, &qh).map_err(|e| format!("wl_compositor: {e}"))?;
-    let layer_shell = LayerShell::bind(&globals, &qh).map_err(|_| "this compositor has no layer shell".to_string())?;
-    let shm = Shm::bind(&globals, &qh).map_err(|e| format!("wl_shm: {e}"))?;
-    let pool = SlotPool::new((W * H * 4) as usize, &shm).map_err(|e| e.to_string())?;
-
-    let mut event_loop = EventLoop::<Overlay>::try_new().map_err(|e| e.to_string())?;
-    WaylandSource::new(conn, queue).insert(event_loop.handle()).map_err(|e| e.to_string())?;
-
-    let mut overlay = Overlay {
-        registry: RegistryState::new(&globals),
-        outputs: OutputState::new(&globals, &qh),
-        compositor,
-        layer_shell,
-        shm,
-        pool,
-        fonts,
-        layer: None,
-        place: Config::load().lag_overlay_place,
-        configured: false,
-        shown: None,
-        want: None,
-    };
-    let mut watch = Watch::default();
-    let mut enabled = (Instant::now(), true);
-    loop {
-        let now = Instant::now();
-        // The Lag tab's switch and place; checked once a second.
-        if now.duration_since(enabled.0) >= Duration::from_secs(1) {
-            let cfg = Config::load();
-            enabled = (now, cfg.lag_overlay);
-            if cfg.lag_overlay_place != overlay.place {
-                overlay.place = cfg.lag_overlay_place;
-                // Opened again in the new place on the next sync.
-                overlay.layer = None;
-            }
-        }
-        let banner = ask_status().and_then(|text| {
-            let fake_lag = lag::parse_fake_lag(&text);
-            watch.update(&lag::parse_status(&text), fake_lag.as_ref(), now)
-        });
-        overlay.want = banner.filter(|_| enabled.1);
-        overlay.sync(&qh);
-        event_loop.dispatch(TICK, &mut overlay).map_err(|e| e.to_string())?;
-    }
-}
-
-struct Overlay {
-    registry: RegistryState,
-    outputs: OutputState,
-    compositor: CompositorState,
-    layer_shell: LayerShell,
-    shm: Shm,
-    pool: SlotPool,
-    fonts: Fonts,
-    layer: Option<LayerSurface>,
-    place: OverlayPlace,
-    configured: bool,
-    /// What's on screen now, and what should be.
-    shown: Option<Banner>,
-    want: Option<Banner>,
-}
-
-impl Overlay {
-    /// Make the screen match `want`: open, redraw or close the surface.
-    fn sync(&mut self, qh: &QueueHandle<Self>) {
-        match (&self.want, &self.layer) {
-            (None, Some(_)) => {
-                // Dropping the surface takes it off screen.
-                self.layer = None;
-                self.shown = None;
-            }
-            (Some(_), None) => self.open(qh),
-            (Some(want), Some(_)) if self.configured && self.shown.as_ref() != Some(want) => self.draw(),
-            _ => {}
-        }
-    }
-
-    fn open(&mut self, qh: &QueueHandle<Self>) {
-        let surface = self.compositor.create_surface(qh);
-        // No output given: the compositor puts it on the focused monitor.
-        let layer = self.layer_shell.create_layer_surface(qh, surface, Layer::Overlay, Some("hyprclick-overlay"), None);
-        match self.place {
-            // Zone 0 keeps it clear of bars at that edge.
-            OverlayPlace::Top => {
-                layer.set_anchor(Anchor::TOP);
-                layer.set_margin(16, 0, 0, 0);
-            }
-            OverlayPlace::Bottom => {
-                layer.set_anchor(Anchor::BOTTOM);
-                layer.set_margin(0, 0, 140, 0);
-            }
-            // No anchors centers it; -1 centers it on the whole screen, bars or not.
-            OverlayPlace::Middle => {
-                layer.set_anchor(Anchor::empty());
-                layer.set_exclusive_zone(-1);
-            }
-        }
-        layer.set_keyboard_interactivity(KeyboardInteractivity::None);
-        layer.set_size(W, self.height());
-        // An empty input region lets every click through to the game.
-        if let Ok(region) = Region::new(&self.compositor) {
-            layer.wl_surface().set_input_region(Some(region.wl_region()));
-        }
-        layer.commit();
-        self.layer = Some(layer);
-        self.configured = false;
-        self.shown = None;
-    }
-
-    fn height(&self) -> u32 {
-        if self.place == OverlayPlace::Middle { H } else { BANNER_H }
-    }
-
-    fn draw(&mut self) {
-        let height = self.height() as i32;
-        let (Some(layer), Some(banner)) = (&self.layer, &self.want) else { return };
-        let Ok((buffer, canvas)) = self.pool.create_buffer(W as i32, height, (W * 4) as i32, wl_shm::Format::Argb8888) else {
-            return;
-        };
-        // The banner is in the top rows, so a shorter surface takes just those.
-        let pixels = render(banner, &self.fonts);
-        for (dst, px) in canvas.chunks_exact_mut(4).zip(pixels) {
-            dst.copy_from_slice(&px.to_le_bytes());
-        }
-        layer.wl_surface().damage_buffer(0, 0, W as i32, height);
-        if buffer.attach_to(layer.wl_surface()).is_err() {
-            return;
-        }
-        layer.commit();
-        self.shown = Some(banner.clone());
-    }
-}
-
-impl CompositorHandler for Overlay {
-    fn scale_factor_changed(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_surface::WlSurface, _: i32) {}
-    fn transform_changed(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_surface::WlSurface, _: wl_output::Transform) {}
-    fn frame(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_surface::WlSurface, _: u32) {}
-    fn surface_enter(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_surface::WlSurface, _: &wl_output::WlOutput) {}
-    fn surface_leave(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_surface::WlSurface, _: &wl_output::WlOutput) {}
-}
-
-impl OutputHandler for Overlay {
-    fn output_state(&mut self) -> &mut OutputState {
-        &mut self.outputs
-    }
-    fn new_output(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_output::WlOutput) {}
-    fn update_output(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_output::WlOutput) {}
-    fn output_destroyed(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_output::WlOutput) {}
-}
-
-impl LayerShellHandler for Overlay {
-    fn closed(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &LayerSurface) {
-        // The compositor took it away (its monitor went off); open a new one next tick.
-        self.layer = None;
-        self.shown = None;
-    }
-
-    fn configure(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &LayerSurface, _: LayerSurfaceConfigure, _: u32) {
-        self.configured = true;
-        self.shown = None;
-        self.draw();
-    }
-}
-
-impl ShmHandler for Overlay {
-    fn shm_state(&mut self) -> &mut Shm {
-        &mut self.shm
-    }
-}
-
-impl ProvidesRegistryState for Overlay {
-    fn registry(&mut self) -> &mut RegistryState {
-        &mut self.registry
-    }
-    registry_handlers![OutputState];
-}
-
-delegate_compositor!(Overlay);
-delegate_output!(Overlay);
-delegate_shm!(Overlay);
-delegate_layer!(Overlay);
-delegate_registry!(Overlay);
-
 struct Fonts {
     bold: FontVec,
     regular: FontVec,
 }
 
 impl Fonts {
-    /// The rice's font like the window uses, else DejaVu Sans.
+    /// The rice's font like the window uses, else Segoe UI on Windows or DejaVu Sans.
     fn load() -> Result<Self, String> {
-        let theme = crate::theme::get();
         let read = |path: &Option<std::path::PathBuf>| path.as_ref().and_then(|p| std::fs::read(p).ok()).and_then(|b| FontVec::try_from_vec(b).ok());
+        #[cfg(windows)]
+        let theme = {
+            let fonts = std::env::var_os("WINDIR").map_or_else(|| std::path::PathBuf::from(r"C:\Windows"), std::path::PathBuf::from).join("Fonts");
+            (Some(fonts.join("segoeui.ttf")), Some(fonts.join("segoeuib.ttf")))
+        };
+        #[cfg(not(windows))]
+        let theme = (crate::theme::get().font_regular.clone(), crate::theme::get().font_bold.clone());
         let fallback = || read(&crate::theme::fallback_font());
-        let regular = read(&theme.font_regular).or_else(fallback).ok_or("no font found (install DejaVu Sans)")?;
-        let bold = read(&theme.font_bold).or_else(|| read(&theme.font_regular)).or_else(fallback).ok_or("no font found")?;
+        let regular = read(&theme.0).or_else(fallback).ok_or("no font found (install DejaVu Sans)")?;
+        let bold = read(&theme.1).or_else(|| read(&theme.0)).or_else(fallback).ok_or("no font found")?;
         Ok(Self { bold, regular })
     }
 }
@@ -470,8 +269,9 @@ mod tests {
         let mut w = Watch::default();
         let t = Instant::now();
         assert!(w.update(&Status::Idle, None, t).is_none());
-        let frozen = Status::Frozen { mode: "toggle".into(), direction: "both".into(), left_ms: 0 };
-        assert_eq!(w.update(&frozen, Some(&lag(200)), t).unwrap().detail, "press again · lag +200 ms ping");
+        let frozen = Status::Frozen { mode: "toggle".into(), direction: "both".into(), left_ms: 25000 };
+        let b = w.update(&frozen, Some(&lag(200)), t).unwrap();
+        assert_eq!((b.detail.as_str(), b.bar), ("25.0 s left · +200 ms", Some(1.0)));
         // Unfrozen with fake lag still on: show the lag, not "UNFROZEN".
         assert_eq!(w.update(&Status::Idle, Some(&lag(200)), t).unwrap().title, "FAKE LAG");
         assert_eq!(w.update(&Status::Idle, None, t).unwrap().title, "FAKE LAG OFF");
